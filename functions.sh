@@ -430,7 +430,7 @@ function get-airing-status () {
 					cat "$SCRIPT_FOLDER/config/data/anilist-$anilist_id.json" >> "$SCRIPT_FOLDER/config/tmp/airing_sequel_tmp.json"
 				done < "$SCRIPT_FOLDER/config/tmp/airing_sequel_tmp.txt"
 				anilist_id=$anilist_multi_id_backup
-				sequel_data=$(jq '.data.Media.relations.edges[] | select ( .relationType == "SEQUEL" ) | .node | select ( .format == "TV" or .format == "ONA" or .format == "MOVIE" or .format == "OVA" )' -r "$SCRIPT_FOLDER/config/tmp/airing_sequel_tmp.json")
+				sequel_data=$(jq '.data.Media.relations.edges[] | select ( .relationType == "SEQUEL" ) | .node | select ( .format == "TV" or .format == "ONA" or .format == "MOVIE" or .format == "OVA" or .format == null )' -r "$SCRIPT_FOLDER/config/tmp/airing_sequel_tmp.json")
 				if [ -z "$sequel_data" ]
 				then
 					airing_status="Ended"
@@ -458,7 +458,7 @@ function get-airing-status () {
 				fi
 			else
 				get-anilist-infos
-				sequel_data=$(jq '.data.Media.relations.edges[] | select ( .relationType == "SEQUEL" ) | .node | select ( .format == "TV" or .format == "ONA" or .format == "MOVIE" or .format == "OVA" )' -r "$SCRIPT_FOLDER/config/data/anilist-$anilist_id.json")
+				sequel_data=$(jq '.data.Media.relations.edges[] | select ( .relationType == "SEQUEL" ) | .node | select ( .format == "TV" or .format == "ONA" or .format == "MOVIE" or .format == "OVA" or .format == null )' -r "$SCRIPT_FOLDER/config/data/anilist-$anilist_id.json")
 				if [ -z "$sequel_data" ]
 				then
 					airing_status="Ended"
