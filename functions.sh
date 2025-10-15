@@ -437,7 +437,7 @@ function get-airing-status () {
 					anilist_id=$anilist_backup_id
 					break
 				else
-					sequel_check=$(printf "%s" "$sequel_data" | jq 'select ( .format == "TV" or .format == "ONA" or .format == "MOVIE" )')
+					sequel_check=$(printf "%s" "$sequel_data" | jq 'select ( .format == "TV" or .format == "ONA" or .format == "MOVIE" or .format == "OVA" or .format == null )')
 					if echo "$sequel_check" | grep -q -w "NOT_YET_RELEASED"
 					then
 						airing_status="Planned"
@@ -465,7 +465,7 @@ function get-airing-status () {
 					anilist_id=$anilist_backup_id
 					break
 				else
-					sequel_check=$(printf "%s" "$sequel_data" | jq 'select ( .format == "TV" or .format == "ONA" or .format == "MOVIE" )')
+					sequel_check=$(printf "%s" "$sequel_data" | jq 'select ( .format == "TV" or .format == "ONA" or .format == "MOVIE" or .format == "OVA" or .format == null )')
 					if echo "$sequel_check" | grep -q -w "NOT_YET_RELEASED"
 					then
 						airing_status="Planned"
