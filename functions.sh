@@ -1026,8 +1026,10 @@ function get-season-infos () {
 							else
 								printf "        label: Score,%s\n" "$season_label_add" >> "$METADATA"
 							fi
-						elif [[ $IGNORE_SEASONS_RATING != "Yes" ]]
+						elif [[ $IGNORE_SEASONS_RATING == "Yes" ]]
 						then	
+							printf "        label: %s\n" "$season_label_add" >> "$METADATA"
+						else
 							printf "        label: Score,%s\n" "$season_label_add" >> "$METADATA"
 						fi
 					else
@@ -1037,28 +1039,37 @@ function get-season-infos () {
 							then
 								printf "        label: Score\n" >> "$METADATA"
 							fi
+						elif [[ $IGNORE_SEASONS_RATING != "Yes" ]]
+						then	
+							printf "        label: Score\n" >> "$METADATA"
 						fi
 					fi
 					if [[ -n "$season_label_remove" ]]
 					then
 						if [[ $last_season -eq 1 ]]
 						then
-							if [[ $IGNORE_S1_ONLY_RATING == "Yes" ]]
+							if [[ $IGNORE_S1_ONLY_RATING == "Yes" ]] || [[ $IGNORE_SEASONS_RATING == "Yes" ]]
 							then
 								printf "        label.remove: Score,%s\n" "$season_label_remove" >> "$METADATA"
 							else
 								printf "        label.remove: %s\n" "$season_label_remove" >> "$METADATA"
 							fi
+						elif [[ $IGNORE_SEASONS_RATING == "Yes" ]]
+						then
+							printf "        label.remove: Score,%s\n" "$season_label_remove" >> "$METADATA"
 						else
 							printf "        label.remove: %s\n" "$season_label_remove" >> "$METADATA"
 						fi
 					else
 						if [[ $last_season -eq 1 ]]
 						then
-							if [[ $IGNORE_S1_ONLY_RATING == "Yes" ]]
+							if [[ $IGNORE_S1_ONLY_RATING == "Yes" ]] || [[ $IGNORE_SEASONS_RATING == "Yes" ]]
 							then
 							printf "        label.remove: Score\n" >> "$METADATA"
 							fi
+						elif [[ $IGNORE_SEASONS_RATING == "Yes" ]]
+						then
+							printf "        label.remove: Score\n" >> "$METADATA"
 						fi
 					fi
 					if [[ $IGNORE_SEASONS_RATING != "Yes" ]]
