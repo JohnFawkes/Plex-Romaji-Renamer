@@ -1020,54 +1020,69 @@ function get-season-infos () {
 					then
 						if [[ $last_season -eq 1 ]]
 						then
-							if [[ $IGNORE_S1_ONLY_RATING == "Yes" ]]
+							if [[ $IGNORE_S1_ONLY_RATING == "Yes" ]] || [[ $IGNORE_SEASONS_RATING == "Yes" ]]
 							then
 								printf "        label: %s\n" "$season_label_add" >> "$METADATA"
 							else
 								printf "        label: Score,%s\n" "$season_label_add" >> "$METADATA"
 							fi
+						elif [[ $IGNORE_SEASONS_RATING == "Yes" ]]
+						then	
+							printf "        label: %s\n" "$season_label_add" >> "$METADATA"
 						else
 							printf "        label: Score,%s\n" "$season_label_add" >> "$METADATA"
 						fi
 					else
 						if [[ $last_season -eq 1 ]]
 						then
-							if [[ $IGNORE_S1_ONLY_RATING != "Yes" ]]
+							if [[ $IGNORE_S1_ONLY_RATING != "Yes" ]] || [[ $IGNORE_SEASONS_RATING != "Yes" ]]
 							then
 								printf "        label: Score\n" >> "$METADATA"
 							fi
+						elif [[ $IGNORE_SEASONS_RATING != "Yes" ]]
+						then	
+							printf "        label: Score\n" >> "$METADATA"
 						fi
 					fi
 					if [[ -n "$season_label_remove" ]]
 					then
 						if [[ $last_season -eq 1 ]]
 						then
-							if [[ $IGNORE_S1_ONLY_RATING == "Yes" ]]
+							if [[ $IGNORE_S1_ONLY_RATING == "Yes" ]] || [[ $IGNORE_SEASONS_RATING == "Yes" ]]
 							then
 								printf "        label.remove: Score,%s\n" "$season_label_remove" >> "$METADATA"
 							else
 								printf "        label.remove: %s\n" "$season_label_remove" >> "$METADATA"
 							fi
+						elif [[ $IGNORE_SEASONS_RATING == "Yes" ]]
+						then
+							printf "        label.remove: Score,%s\n" "$season_label_remove" >> "$METADATA"
 						else
 							printf "        label.remove: %s\n" "$season_label_remove" >> "$METADATA"
 						fi
 					else
 						if [[ $last_season -eq 1 ]]
 						then
-							if [[ $IGNORE_S1_ONLY_RATING == "Yes" ]]
+							if [[ $IGNORE_S1_ONLY_RATING == "Yes" ]] || [[ $IGNORE_SEASONS_RATING == "Yes" ]]
 							then
 							printf "        label.remove: Score\n" >> "$METADATA"
 							fi
+						elif [[ $IGNORE_SEASONS_RATING == "Yes" ]]
+						then
+							printf "        label.remove: Score\n" >> "$METADATA"
 						fi
 					fi
-					if [[ $last_season -eq 1 ]]
+					if [[ $IGNORE_SEASONS_RATING != "Yes" ]]
 					then
-						if [[ $IGNORE_S1_ONLY_RATING != "Yes" ]]
+						if [[ $last_season -eq 1 ]]
 						then
-						printf "        user_rating: %s\n" "$score_1_season" >> "$METADATA"
+							if [[ $IGNORE_S1_ONLY_RATING != "Yes" ]]
+							then
+							printf "        user_rating: %s\n" "$score_1_season" >> "$METADATA"
+							fi
+						else
+							printf "        user_rating: %s\n" "$score_1_season" >> "$METADATA"
 						fi
-					else
-						printf "        user_rating: %s\n" "$score_1_season" >> "$METADATA"
 					fi
 					total-rating-1
 					total-rating-2
