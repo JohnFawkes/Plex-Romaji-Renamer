@@ -180,6 +180,8 @@ POSTER_SEASON_DOWNLOAD=Yes
 POSTER_SOURCE=ANILIST
 # Ignore seasons title, rating and poster (Yes/No)
 IGNORE_SEASONS=No
+# Ignore seasons rating (Yes/No)
+IGNORE_SEASONS_RATING=No
 # Add the anime season to the season label in plex (Fall  2022, Spring 2021, ...)
 SEASON_YEAR=No
 # Ignore season rating for animmes with only 1 season (Yes/No)
@@ -244,7 +246,8 @@ create a new line and manually enter the IMDB-ID and MAL-ID, MAL-TITLE
   - To Plex for Plex
   - To meisnate12 for Kometa
   - To plexapi
-  - To https://jikan.moe/ for their MAL API
+  - ~~To jikan.moe for their MAL API~~ (Thanks for all the work so far)
+  - To animemap.dev for their MAL API
   - To MAL for being here
   - To Anilist for their API and being here too
   - And to a lot of random people from everywhere for all my copy / paste code
