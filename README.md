@@ -33,9 +33,9 @@ Season view :
     Oshi No Ko
   # Anilist genres or MAL genres, demographics and themes (in settings)
   genre.sync: Drama,Mystery,Psychological,Supernatural,Acting,Tragedy,Idol,Revenge,Twins,Male Protagonist,Urban,Reincarnation,Pregnancy,Detective,Seinen,Tsundere,Boys' Love,Female Protagonist,Coming of Age,Anti-Hero,Time Skip,Orphan,Age Regression,Ensemble Cast,Filmmaking
-  # Add label to build collections and overlays Airing status (Planned, Airing or Ended) and Anime Award winner
-  label: AA Winner,Planned
-  label.remove: Airing,Ended
+  # Add label to build collections and overlays Airing status (Planned, Airing or Ended) Anime Award winner and Anilist userlist status
+  label: AA Winner,Planned,Completed
+  label.remove: Airing,Ended,Watching,Dropped,Paused,Planning
   # Studio from Anilist, or from MAL when AnimeMap carries none
   studio: Doga Kobo
   # Season import
@@ -58,7 +58,8 @@ Season view :
       # Rating 1 from Anilist or MAL (in settings)
       user_rating: 8.5
       # Add label score to use kometa overlays and also add the season label (optionnal)
-      label: Score,2024 Summer
+      label: Score,Completed,2024 Summer
+      label.remove: Watching,Dropped,Paused,Planning
   # Rating 1 : average rating of the seasons (Anilist or MAL)
   audience_rating: 8.4
   # Rating 2 : average rating of the seasons (Anilist or MAL)
@@ -74,14 +75,16 @@ Designed for Plex TV agent / Plex Movie Agent, <b>Hama is unsupported</b>
  ## How it works:
   - Romaji-Renamer will export your Animes and TVDB/IMDB IDs from Plex with python plexapi
   - Then it will retrieve their MAL/Anilist IDs from the AnimeMap export https://mapping.animemap.dev/api/v1/export.json
-  - Use the AnimeMap API https://animemap.dev/docs to get the Anilist and MAL metadata, Anilist and MAL are never called directly
+  - Use the AnimeMap API https://animemap.dev/docs to get the Anilist and MAL metadata, the anilist API is only called for your own userlists
   - Create and update a Kometa metadata file to import everything in to your Plex when Kometa runs.
 
 ### Moving from the Anilist and Jikan APIs to AnimeMap
-Every call now goes to [animemap.dev](https://animemap.dev/docs), nothing is asked of graphql.anilist.co or of a MAL API directly.
-Two settings are gone because AnimeMap does not serve what they needed:
+All the metadata now comes from [animemap.dev](https://animemap.dev/docs), nothing is asked of a MAL API directly and the Jikan and myanimelist.net calls are gone.
+
+`ANILIST_LISTS` is the one feature still served by the Anilist API : reading your own list needs `graphql.anilist.co` and AnimeMap has no equivalent, so `get-anilist-userlist` still calls it when `ANILIST_LISTS=Yes` and the `Completed` / `Watching` / `Dropped` / `Paused` / `Planning` labels are written as before. With `ANILIST_LISTS=No` (the default) nothing is sent to Anilist at all.
+
+One setting is gone because AnimeMap does not serve what it needed :
   - `ANILIST_TAGS_P` : AnimeMap serves the Anilist **genres** but not the Anilist tags and their rank, so `TAG_SOURCE=ANILIST` now imports genres only. `TAG_SOURCE=MAL` still imports the MAL genres, demographics and themes.
-  - `ANILIST_LISTS`, `ANILIST_USERNAME` and `ANILIST_LISTS_LEVEL` : reading a user's own Anilist list needs the Anilist API, AnimeMap has no equivalent, so the `Completed` / `Watching` / `Dropped` / `Paused` / `Planning` labels are no longer written. Leaving them in your `.env` is harmless, they are simply ignored.
 
 The airing status also changed a little : AnimeMap carries no Anilist relation, so instead of walking the sequel chain a serie is labelled `Planned` when any entry of its TVDB serie is still unreleased.
 
@@ -195,6 +198,12 @@ IGNORE_S1_ONLY_RATING=Yes
 ANIME_AWARDS=Yes
 # Ignore non japanese voice actor awards (Yes/No)
 ANIME_AWARDS_NO_FVA=Yes
+# Add tags based on userlists from anilist (Completed, wathcing) (Yes/No), this is the one setting still served by the anilist API
+ANILIST_LISTS=No
+# Anilist username
+ANILIST_USERNAME=Arialz
+# For Shows the level tags should be added ("show", "season" or "both") 
+ANILIST_LISTS_LEVEL=show
 # Data cache time (in days min : 1)
 DATA_CACHE_TIME=5
 
