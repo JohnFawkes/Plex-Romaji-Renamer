@@ -1,6 +1,6 @@
 # Romaji-Renamer
 
-A Bash script to import Anilist and MAL data to your Plex Media Server. This is done with a kometa metadata file.<br/>
+A Bash script to import Anilist and MAL data to your Plex Media Server, all of it served by [animemap.dev](https://animemap.dev/docs). This is done with a kometa metadata file.<br/>
 
 Discord : [![Discord Shield](https://discordapp.com/api/guilds/1209232071902363779/widget.png?style=shield)](https://discord.com/invite/VCEEsp39nh)
 
@@ -31,12 +31,12 @@ Season view :
   # original_title : English title or Native Title (from Anilist)
   original_title: |-
     Oshi No Ko
-  # Anilist genre ands tags (genres, and tag above > 70% can be changed in settings) or from MAL genres, demographics and themes
+  # Anilist genres or MAL genres, demographics and themes (in settings)
   genre.sync: Drama,Mystery,Psychological,Supernatural,Acting,Tragedy,Idol,Revenge,Twins,Male Protagonist,Urban,Reincarnation,Pregnancy,Detective,Seinen,Tsundere,Boys' Love,Female Protagonist,Coming of Age,Anti-Hero,Time Skip,Orphan,Age Regression,Ensemble Cast,Filmmaking
-  # Add label to build collections and overlays Anilist Airing status (Planned, Airing or Ended) Anime Award winner and Anilist userlist status
-  label: AA Winner,Planned,Completed
-  label.remove: Airing,Ended,Watching,Dropped,Paused,Planning
-  # Studio from Anilist                               
+  # Add label to build collections and overlays Airing status (Planned, Airing or Ended) and Anime Award winner
+  label: AA Winner,Planned
+  label.remove: Airing,Ended
+  # Studio from Anilist, or from MAL when AnimeMap carries none
   studio: Doga Kobo
   # Season import
   seasons:
@@ -58,15 +58,14 @@ Season view :
       # Rating 1 from Anilist or MAL (in settings)
       user_rating: 8.5
       # Add label score to use kometa overlays and also add the season label (optionnal)
-      label: Score,Completed,2024 Summer
-      label.remove: Watching,Dropped,Paused,Planning
+      label: Score,2024 Summer
   # Rating 1 : average rating of the seasons (Anilist or MAL)
   audience_rating: 8.4
   # Rating 2 : average rating of the seasons (Anilist or MAL)
   critic_rating: 8.6
 
 ```
-Anilist Posters for animes and seasons can also be downloaded and imported to plex with the Kometa assets folder
+Posters for animes and seasons can also be downloaded and imported to plex with the Kometa assets folder
 
 The seasonal-animes-download.sh can create a list of the new seasonal animes (New as not a sequel anime) and make a collection yml to add them to sonarr.
 
@@ -74,9 +73,17 @@ Designed for Plex TV agent / Plex Movie Agent, <b>Hama is unsupported</b>
 
  ## How it works:
   - Romaji-Renamer will export your Animes and TVDB/IMDB IDs from Plex with python plexapi
-  - Then it will then retrieve their MAL/Anilist IDs from my mapping list https://github.com/Arial-Z/Animes-ID
-  - Use the Anilist API and Jikan API to get metadata from Anilist and MAL
+  - Then it will retrieve their MAL/Anilist IDs from the AnimeMap export https://mapping.animemap.dev/api/v1/export.json
+  - Use the AnimeMap API https://animemap.dev/docs to get the Anilist and MAL metadata, Anilist and MAL are never called directly
   - Create and update a Kometa metadata file to import everything in to your Plex when Kometa runs.
+
+### Moving from the Anilist and Jikan APIs to AnimeMap
+Every call now goes to [animemap.dev](https://animemap.dev/docs), nothing is asked of graphql.anilist.co or of a MAL API directly.
+Two settings are gone because AnimeMap does not serve what they needed:
+  - `ANILIST_TAGS_P` : AnimeMap serves the Anilist **genres** but not the Anilist tags and their rank, so `TAG_SOURCE=ANILIST` now imports genres only. `TAG_SOURCE=MAL` still imports the MAL genres, demographics and themes.
+  - `ANILIST_LISTS`, `ANILIST_USERNAME` and `ANILIST_LISTS_LEVEL` : reading a user's own Anilist list needs the Anilist API, AnimeMap has no equivalent, so the `Completed` / `Watching` / `Dropped` / `Paused` / `Planning` labels are no longer written. Leaving them in your `.env` is harmless, they are simply ignored.
+
+The airing status also changed a little : AnimeMap carries no Anilist relation, so instead of walking the sequel chain a serie is labelled `Planned` when any entry of its TVDB serie is still unreleased.
 
 ### Docker container avalaible here
 https://hub.docker.com/r/arialz/romaji-renamer
@@ -114,9 +121,9 @@ RUN_ANIMES_SCRIPT=Yes
 # Plex animes library name need to be in a double quote (Needed for the animes script)
 ANIME_LIBRARY_NAME="Animes"
 # Path to the created animes metadata file (Needed for the animes script)
-# On docker don't modifify the path "$SCRIPT_FOLDER/pmm/" only the file name if you want
-# on python select the path of the kometa install like this :
-# Kometa_Folder/config/metadata-animes.yml
+# On docker don't change this part "$SCRIPT_FOLDER/pmm/" only the filename if you need
+# On python change the path to the Kometa folder like this :
+# /PATH_TO_PMM_FOLDER/config/metadata-animes.yml
 METADATA_ANIMES=$SCRIPT_FOLDER/pmm/metadata-animes.yml
 
 
@@ -125,9 +132,9 @@ RUN_MOVIES_SCRIPT=No
 # Plex movies animes library name need to be in a double quote (Needed for the movies script)
 MOVIE_LIBRARY_NAME="Animes Movies"
 # Path to the created movies metadata file (Needed for the movies script)
-# On docker don't modifify the path "$SCRIPT_FOLDER/pmm/" only the file name if you want
-# on python select the path of the kometa install like this :
-# Kometa_Folder/config/metadata-animes-movies.yml
+# On docker don't change this part "$SCRIPT_FOLDER/pmm/" only the filename if you need
+# On python change the path to the Kometa folder like this :
+# /PATH_TO_PMM_FOLDER/config/metadata-animes-movies.yml
 METADATA_MOVIES=$SCRIPT_FOLDER/pmm/metadata-animes-movies.yml
 
 # Run the seasonal download script (Yes/No)
@@ -144,11 +151,11 @@ ASSET_FOLDER=$SCRIPT_FOLDER/pmm/assets
 LOG_FOLDER=$SCRIPT_FOLDER/config/logs
 
 
-# Source for RATING 1 (main show and seasons) (MAL / ANILIST)
+# Source for RATING 1 (main show and seasons) (MAL / ANILIST), both are served by animemap.dev
 RATING_1_SOURCE=ANILIST
 # Type of rating used in Plex for RATING 1 (audience, critic, user)
 RATING_1_TYPE=audience
-# Source for RATING 2 (main show only) (MAL / ANILIST or leave empty to disable)
+# Source for RATING 2 (main show only) (MAL / ANILIST or leave empty to disable), both are served by animemap.dev
 RATING_2_SOURCE=MAL
 # Type of rating used in Plex for RATING 2 (audience, critic, user / leave empty to disable)
 RATING_2_TYPE=critic
@@ -160,23 +167,21 @@ MAIN_TITLE_ENG=No
 SORT_TITLE_ENG=No
 # Use the native name as original_title instead of the romaji/english one (Yes/No)
 ORIGINAL_TITLE_NATIVE=Yes
-# Rename season to the anilist title of that season (use the same setting as MAIN_TITLE) (Yes/No)
+# Rename season to the title of that season (use the same setting as MAIN_TITLE) (Yes/No)
 RENAME_SEASONS=Yes
-# Anilist have some full uppercase title, this settings will remove them "86 EIGHTY-SIX" > "86 Eighty-Six" (Yes/No)
+# Some titles are full uppercase, this settings will remove them "86 EIGHTY-SIX" > "86 Eighty-Six" (Yes/No)
 REDUCE_TITLE_CAPS=Yes
 # Disable tags import (Yes/No)
 DISABLE_TAGS=No
-# Source for tags (MAL / ANILIST)
+# Source for tags (MAL / ANILIST), both are served by animemap.dev
 TAG_SOURCE=ANILIST
 # Add a default "Anime" tag to everything (Yes/No)
 ADD_ANIME_TAG=Yes
-#Grab anilist tags higher or equal than percentage (0-100)
-ANILIST_TAGS_P=70
 # Download poster (Yes/No)
 POSTER_DOWNLOAD=Yes
 # Download seasons poster (Yes/No)
 POSTER_SEASON_DOWNLOAD=Yes
-# Source for poster (MAL / ANILIST)
+# Source for poster (MAL / ANILIST), both are served by animemap.dev
 POSTER_SOURCE=ANILIST
 # Ignore seasons title, rating and poster (Yes/No)
 IGNORE_SEASONS=No
@@ -190,14 +195,14 @@ IGNORE_S1_ONLY_RATING=Yes
 ANIME_AWARDS=Yes
 # Ignore non japanese voice actor awards (Yes/No)
 ANIME_AWARDS_NO_FVA=Yes
-# Add tags based on userlists from anilist (Completed, wathcing) (Yes/No)
-ANILIST_LISTS=No
-# Anilist username
-ANILIST_USERNAME=Arialz
-# For Shows the level tags should be added ("show", "season" or "both") 
-ANILIST_LISTS_LEVEL=show
-# Mal Data cache time (in days min : 1)
+# Data cache time (in days min : 1)
 DATA_CACHE_TIME=5
+
+
+# AnimeMap API url, only change it if you host your own instance (https://animemap.dev/docs)
+ANIMEMAP_API_URL=https://mapping.animemap.dev/api/v1
+# How many times a failed AnimeMap API call is retried before the script gives up
+ANIMEMAP_API_RETRY=4
 ```
 
 ### Step 4 - Configure Kometa 
@@ -214,13 +219,13 @@ Run the script with bash:<br/>
 ```
 bash path/to/romaji-renamer.sh
 ```
-You can also add it to CRON and make sure to run it before Kometa (be careful it take a little time to run due to API limit rate)
+You can also add it to CRON and make sure to run it before Kometa (each run first downloads the AnimeMap export and catalog, which takes about a minute)
 
 ### override-ID
 Some animes won't be matched and the metadata will be missing, you can see them error in the log, in Kometa metadata files or plex directly<br/>
-Cause are missing MAL ID for the TVDB ID / IMDB ID<br/>
+Cause are missing Anilist ID for the TVDB ID / IMDB ID on AnimeMap<br/>
 #### Animes
-to fix animes ID you can create a request at https://github.com/Anime-Lists/anime-lists/<br/>
+to fix animes ID you can submit an override at https://animemap.dev/docs (`/api/v1/overrides`)<br/>
 you can also use the override file, in the config folder copy `override-ID-animes.tsv.example` to `override-ID-animes.tsv` and add new entries, it look like this, be carreful to use **tab** as separator even the empty one (title, studio and ignore_seasons are optional and can be used to force corresponding string)
 you can also ignore an anime so the script will not make any change to it (see the last line)
 ```tsv
@@ -230,9 +235,9 @@ tvdb-id	anilist-id	Title	Studio	ignore_seasons	notes
 76013	627	Major			
 82099	ignore				
 ```
-create a new line and manually enter the TVDB-ID and MAL-ID, MAL-TITLE<br/>
+create a new line and manually enter the TVDB-ID and the Anilist-ID<br/>
 #### Movies
-to fix movies ID you can create a request at https://github.com/Anime-Lists/anime-lists/<br/>
+to fix movies ID you can submit an override at https://animemap.dev/docs (`/api/v1/overrides`)<br/>
 you can also use the override file, in the config folder copy `override-ID-movies.tsv.example` to `override-ID-movies.tsv` and add new entries, it look like this, be carreful to use **tab** as separator even the empty one (title and studio are optional and can be used to force corresponding string)
 you can also ignore a movie so the script will not make any change to it (see the last line)
 ```tsv
@@ -240,14 +245,14 @@ imdb-id	anilist-id	Title	Studio	notes
 tt0110008	1030		Studio Ghibli	Pompoko
 tt3666024	ignore			
 ```
-create a new line and manually enter the IMDB-ID and MAL-ID, MAL-TITLE
+create a new line and manually enter the IMDB-ID and the Anilist-ID
 
 ### Thanks
   - To Plex for Plex
   - To meisnate12 for Kometa
   - To plexapi
   - ~~To jikan.moe for their MAL API~~ (Thanks for all the work so far)
-  - To animemap.dev for their MAL API
+  - To animemap.dev for the id mapping and for serving both the Anilist and the MAL metadata
   - To MAL for being here
-  - To Anilist for their API and being here too
+  - To Anilist for being here too
   - And to a lot of random people from everywhere for all my copy / paste code

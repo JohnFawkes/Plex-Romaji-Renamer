@@ -19,18 +19,34 @@ fi
 
 #SCRIPT
 printf "%s - Starting script\n\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-download-anime-id-mapping
+download-animemap-data
 printf "%s - checking current season\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-curl -s -L -A "Mozilla/5.0 (X11; Linux x86_64)" "https://myanimelist.net/anime/season" -o "$SCRIPT_FOLDER/config/tmp/this-season.html"
-season=$(awk -v IGNORECASE=1 -v RS='</title' 'RT{gsub(/.*<title[^>]*>/,"");print;exit}' "$SCRIPT_FOLDER/config/tmp/this-season.html" | awk '{print $1}'| tr '[:lower:]' '[:upper:]'| tr -d '\n')
-year=$(awk -v IGNORECASE=1 -v RS='</title' 'RT{gsub(/.*<title[^>]*>/,"");print;exit}' "$SCRIPT_FOLDER/config/tmp/this-season.html" | awk '{print $2}'| tr -d '\n')
+if ! animemap-api-get "$ANIMEMAP_API_URL/seasons/now?limit=1" "$SCRIPT_FOLDER/config/tmp/this-season.json"
+then
+	printf "%s - Error can't read the current season stopping script\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
+	exit 1
+fi
+season=$(jq '.entries[0].season // empty' -r "$SCRIPT_FOLDER/config/tmp/this-season.json")
+year=$(jq '.entries[0].season_year // empty' -r "$SCRIPT_FOLDER/config/tmp/this-season.json")
+if [[ -z $season ]] || [[ -z $year ]]
+then
+	printf "%s - Error the current season is empty stopping script\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
+	exit 1
+fi
 printf "%s - Current season : %s %s\n\n" "$(date +%H:%M:%S)" "$season" "$year" | tee -a "$LOG"
 printf "%s - Creating seasonal list\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-printf "%s\t - Downloading anilist season list\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-curl -s 'https://graphql.anilist.co/' \
--X POST \
--H 'content-type: application/json' \
---data '{ "query": "{ Page(page: 1, perPage: '"$DOWNLOAD_LIMIT"') { pageInfo { hasNextPage } media(type: ANIME, seasonYear: '"$year"' season: '"$season"', format: TV, sort: POPULARITY_DESC) { id } } }" }' | jq '.data.Page.media[] | .id' > "$SCRIPT_FOLDER/config/tmp/seasonal-anilist.tsv"
+printf "%s\t - Downloading AnimeMap season list\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
+seasonal_limit=$DOWNLOAD_LIMIT
+if [[ $seasonal_limit -gt $ANIMEMAP_PAGE_SIZE ]]									# the browse endpoint serves at most 100 entries per call
+then
+	seasonal_limit=$ANIMEMAP_PAGE_SIZE
+fi
+if ! animemap-api-get "$ANIMEMAP_API_URL/mapping/browse?year=$year&season=$season&format=TV&sort=score_desc&limit=$seasonal_limit" "$SCRIPT_FOLDER/config/tmp/seasonal-animemap.json"
+then
+	printf "%s - Error can't download the AnimeMap season list stopping script\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
+	exit 1
+fi
+jq '.entries[].anilist_id' -r "$SCRIPT_FOLDER/config/tmp/seasonal-animemap.json" > "$SCRIPT_FOLDER/config/tmp/seasonal-animemap.tsv"
 printf "%s\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
 printf "%s\t - Sorting seasonal list\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
 while read -r anilist_id
@@ -44,8 +60,8 @@ do
 		printf "%s\t\t - Seasonal invalid TVDB ID for Anilist : %s\n" "$(date +%H:%M:%S)" "$anilist_id" | tee -a "$LOG"
 		continue
 	else
-		tvdb_season=$(jq --arg anilist_id "$anilist_id" '.[] | select( .anilist_id == $anilist_id ) | .tvdb_season' -r "$SCRIPT_FOLDER/config/tmp/list-animes-id.json")
-		tvdb_epoffset=$(jq --arg anilist_id "$anilist_id" '.[] | select( .anilist_id == $anilist_id ) | .tvdb_epoffset' -r "$SCRIPT_FOLDER/config/tmp/list-animes-id.json")
+		tvdb_season=$(jq --arg anilist_id "$anilist_id" '.[] | select( .anilist_id == $anilist_id ) | .tvdb_season' -r "$ANIMEMAP_ANIMES_ID")
+		tvdb_epoffset=$(jq --arg anilist_id "$anilist_id" '.[] | select( .anilist_id == $anilist_id ) | .tvdb_epoffset' -r "$ANIMEMAP_ANIMES_ID")
 		if [[ "$tvdb_season" -eq 1 ]] && [[ "$tvdb_epoffset" -eq 0 ]]
 		then
 			printf "%s\n" "$tvdb_id" >> "$SCRIPT_FOLDER/config/data/seasonal.tsv"
@@ -54,7 +70,7 @@ do
 			printf "%s\t\t - Sequel seasonal anime not adding to list : Anilist id : %s / tvdb id : %s\n" "$(date +%H:%M:%S)" "$anilist_id" "$tvdb_id" | tee -a "$LOG"
 		fi
 	fi
-done < "$SCRIPT_FOLDER/config/tmp/seasonal-anilist.tsv"
+done < "$SCRIPT_FOLDER/config/tmp/seasonal-animemap.tsv"
 printf "%s - Done\n\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
 
 
