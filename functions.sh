@@ -7,6 +7,7 @@ MATCH_LOG=$LOG_FOLDER/${media_type}-missing-id.log
 #AnimeMap API (https://animemap.dev/docs)
 ANIMEMAP_API_URL=${ANIMEMAP_API_URL:-https://mapping.animemap.dev/api/v1}
 ANIMEMAP_API_RETRY=${ANIMEMAP_API_RETRY:-4}
+ANILIST_TAGS_P=${ANILIST_TAGS_P:-70}
 ANIMEMAP_PAGE_SIZE=100
 ANIMEMAP_EXPORT="$SCRIPT_FOLDER/config/tmp/animemap-export.json"
 ANIMEMAP_ANIMES_ID="$SCRIPT_FOLDER/config/tmp/animemap-animes-id.json"
@@ -133,6 +134,7 @@ function download-animemap-catalog () {													# the metadata (titles, scor
 			status: .status,
 			average_score: .average_score,
 			genres: ( .genres // [] ),
+			tags: [ .tags[]? | { name, rank } ],
 			studios: ( .studios // [] ),
 			cover_image: .cover_image,
 			mal_id: .mal_id,
@@ -230,6 +232,7 @@ function animemap-empty-record () {														# a full record with every fiel
 		status: null,
 		average_score: null,
 		genres: [],
+		tags: [],
 		studios: [],
 		cover_image: null,
 		mal_id: null,
@@ -292,6 +295,7 @@ function get-animemap-infos () {														# cache the catalog entry of $anil
 		status: .anilist.status,
 		average_score: .anilist.average_score,
 		genres: ( .anilist.genres // [] ),
+		tags: [ .anilist.tags[]? | { name, rank } ],
 		studios: [],
 		cover_image: .anilist.cover_image,
 		mal_id: .mal.id,
@@ -430,9 +434,35 @@ function get-mal-score () {
 		anime_score=0
 	fi
 }
-function get-animemap-tags () {															# AnimeMap serves the anilist genres, it carries no anilist tag and no tag rank
+function get-full-tags () {																# browse serves the 10 top ranked tags only, the per id endpoint serves them all
+	local data_file="$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json"
+	local api_file="$SCRIPT_FOLDER/config/tmp/animemap-tags.json"
+	local tags_count=0
+	local lowest_rank=0
+	tags_count=$(jq '.tags | length' -r "$data_file")
+	if [[ $tags_count -lt 10 ]]															# a short list was never cut, everything anilist knows is already there
+	then
+		return 0
+	fi
+	lowest_rank=$(jq '.tags | .[-1].rank // 0' -r "$data_file")
+	if [[ $lowest_rank -lt $ANILIST_TAGS_P ]]											# the cut only dropped tags ranked under the threshold
+	then
+		return 0
+	fi
+	printf "%s\t\t - Downloading the full tag list for animemap : %s\n" "$(date +%H:%M:%S)" "$anilist_id" | tee -a "$LOG"
+	if ! animemap-api-get "$ANIMEMAP_API_URL/mapping/anilist/$anilist_id" "$api_file"
+	then
+		printf "%s\t\t - Can't download the tags for : %s keeping the %s top ranked ones\n" "$(date +%H:%M:%S)" "$anilist_id" "$tags_count" | tee -a "$LOG"
+		return 0
+	fi
+	jq -c --slurpfile mapping "$api_file" '.tags = [ $mapping[0].mapping.anilist.tags[]? | { name, rank } ]' "$data_file" > "$data_file.tmp" && mv "$data_file.tmp" "$data_file"
+	rm -f "$api_file"
+	printf "%s\t\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
+}
+function get-animemap-tags () {															# the anilist genres, plus the tags ranked at or above ANILIST_TAGS_P
 	get-animemap-infos
-	anime_tags=$(jq '.genres | .[]' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json" | awk '{print $0}' | paste -sd ',')
+	get-full-tags
+	anime_tags=$( (jq '.genres | .[]' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json" && jq --argjson anilist_tags_p "$ANILIST_TAGS_P" '.tags | .[] | select( .rank >= $anilist_tags_p ) | .name' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json") | awk '{print $0}' | paste -sd ',')
 }
 function get-mal-tags () {
 	anime_tags=""

@@ -31,7 +31,7 @@ Season view :
   # original_title : English title or Native Title (from Anilist)
   original_title: |-
     Oshi No Ko
-  # Anilist genres or MAL genres, demographics and themes (in settings)
+  # Anilist genre ands tags (genres, and tag above > 70% can be changed in settings) or from MAL genres, demographics and themes
   genre.sync: Drama,Mystery,Psychological,Supernatural,Acting,Tragedy,Idol,Revenge,Twins,Male Protagonist,Urban,Reincarnation,Pregnancy,Detective,Seinen,Tsundere,Boys' Love,Female Protagonist,Coming of Age,Anti-Hero,Time Skip,Orphan,Age Regression,Ensemble Cast,Filmmaking
   # Add label to build collections and overlays Airing status (Planned, Airing or Ended) Anime Award winner and Anilist userlist status
   label: AA Winner,Planned,Completed
@@ -79,14 +79,13 @@ Designed for Plex TV agent / Plex Movie Agent, <b>Hama is unsupported</b>
   - Create and update a Kometa metadata file to import everything in to your Plex when Kometa runs.
 
 ### Moving from the Anilist and Jikan APIs to AnimeMap
-All the metadata now comes from [animemap.dev](https://animemap.dev/docs), nothing is asked of a MAL API directly and the Jikan and myanimelist.net calls are gone.
+All the metadata now comes from [animemap.dev](https://animemap.dev/docs), nothing is asked of a MAL API directly and the Jikan and myanimelist.net calls are gone. Every setting works as it did before, so an existing `.env` needs no change.
 
 `ANILIST_LISTS` is the one feature still served by the Anilist API : reading your own list needs `graphql.anilist.co` and AnimeMap has no equivalent, so `get-anilist-userlist` still calls it when `ANILIST_LISTS=Yes` and the `Completed` / `Watching` / `Dropped` / `Paused` / `Planning` labels are written as before. With `ANILIST_LISTS=No` (the default) nothing is sent to Anilist at all.
 
-One setting is gone because AnimeMap does not serve what it needed :
-  - `ANILIST_TAGS_P` : AnimeMap serves the Anilist **genres** but not the Anilist tags and their rank, so `TAG_SOURCE=ANILIST` now imports genres only. `TAG_SOURCE=MAL` still imports the MAL genres, demographics and themes.
+`ANILIST_TAGS_P` works as before : AnimeMap serves the Anilist tags with their rank. The catalog download carries the 10 top ranked tags of each anime, and when that cut could have dropped a tag at or above your threshold the full list is fetched for that anime, so the result is the same list you would get from Anilist itself whatever the threshold.
 
-The airing status also changed a little : AnimeMap carries no Anilist relation, so instead of walking the sequel chain a serie is labelled `Planned` when any entry of its TVDB serie is still unreleased.
+The airing status is the one behaviour that changed : AnimeMap carries no Anilist relation, so instead of walking the sequel chain a serie is labelled `Planned` when any entry of its TVDB serie is still unreleased.
 
 ### Docker container avalaible here
 https://hub.docker.com/r/arialz/romaji-renamer
@@ -180,6 +179,8 @@ DISABLE_TAGS=No
 TAG_SOURCE=ANILIST
 # Add a default "Anime" tag to everything (Yes/No)
 ADD_ANIME_TAG=Yes
+#Grab anilist tags higher or equal than percentage (0-100)
+ANILIST_TAGS_P=70
 # Download poster (Yes/No)
 POSTER_DOWNLOAD=Yes
 # Download seasons poster (Yes/No)
