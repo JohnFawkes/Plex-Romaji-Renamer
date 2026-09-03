@@ -78,12 +78,14 @@ Designed for Plex TV agent / Plex Movie Agent, <b>Hama is unsupported</b>
   - Use the AnimeMap API https://animemap.dev/docs to get the Anilist and MAL metadata, the anilist API is only called for your own userlists
   - Create and update a Kometa metadata file to import everything in to your Plex when Kometa runs.
 
+> **An API key is needed.** `mapping.animemap.dev` answers `401` without one on every endpoint except `browse`. Register an account and create a key at `https://mapping.animemap.dev/api/v1/auth/keys` (it is shown once), then put it in `ANIMEMAP_API_KEY` in your `.env`. `https://mapping.animemap.dev/health` reports `api_key_required` so you can check whether your instance needs one.
+
 ### Moving from the Anilist and Jikan APIs to AnimeMap
 All the metadata now comes from [animemap.dev](https://animemap.dev/docs), nothing is asked of a MAL API directly and the Jikan and myanimelist.net calls are gone. Every setting works as it did before, so an existing `.env` needs no change.
 
 `ANILIST_LISTS` is the one feature still served by the Anilist API : reading your own list needs `graphql.anilist.co` and AnimeMap has no equivalent, so `get-anilist-userlist` still calls it when `ANILIST_LISTS=Yes` and the `Completed` / `Watching` / `Dropped` / `Paused` / `Planning` labels are written as before. With `ANILIST_LISTS=No` (the default) nothing is sent to Anilist at all.
 
-`ANILIST_TAGS_P` works as before : AnimeMap serves the Anilist tags with their rank. The catalog download carries the 10 top ranked tags of each anime, and when that cut could have dropped a tag at or above your threshold the full list is fetched for that anime, so the result is the same list you would get from Anilist itself whatever the threshold.
+`ANILIST_TAGS_P` works as before : AnimeMap serves the Anilist tags with their rank. They are read from the per id endpoint with `include_spoilers=true`, not from the catalog download : `browse` returns the 10 top ranked tags only **and** drops the tags flagged as spoilers (Evangelion loses 15 of them, Death Note 6), and the old Anilist query kept both. The answer is cached per anime like the rest, so it is fetched once per `DATA_CACHE_TIME` and reused.
 
 The airing status is the one behaviour that changed : AnimeMap carries no Anilist relation, so instead of walking the sequel chain a serie is labelled `Planned` when any entry of its TVDB serie is still unreleased.
 
@@ -211,6 +213,10 @@ DATA_CACHE_TIME=5
 
 # AnimeMap API url, only change it if you host your own instance (https://animemap.dev/docs)
 ANIMEMAP_API_URL=https://mapping.animemap.dev/api/v1
+# AnimeMap API key. mapping.animemap.dev now answers 401 without one on every endpoint but browse.
+# Register an account then create a key at https://mapping.animemap.dev/api/v1/auth/keys, it is shown once.
+# Check https://mapping.animemap.dev/health : "api_key_required" tells you whether your instance needs it.
+ANIMEMAP_API_KEY=
 # How many times a failed AnimeMap API call is retried before the script gives up
 ANIMEMAP_API_RETRY=4
 ```
