@@ -124,7 +124,7 @@ function download-animemap-data () {													# one download answers offline 
 			average_score: .average_score,
 			genres: ( .genres // [] ),
 			tags: [ .tags[]? | { name, rank } ],
-			studios: ( .studios // [] ),
+			studios: [ .studios[]? | if type == "object" then .name else . end ],
 			cover_image: .cover_image,
 			mal_id: .mal.id,
 			tvdb_id: .tvdb.id } | tojson )"' "$ANIMEMAP_EXPORT" \
@@ -274,7 +274,7 @@ function get-animemap-infos () {														# cache the catalog entry of $anil
 		animemap-empty-record "$anilist_id" > "$data_file"
 		return 0
 	fi
-	# the per id endpoint carries no studio and no anilist season, they only exist on the catalog
+	# the export serves a studio name as a string, this endpoint as an object, so both are reduced to the name
 	jq -c '.mapping | { anilist_id: .anilist.anilist_id,
 		title_romaji: .anilist.title_romaji,
 		title_english: .anilist.title_english,
@@ -282,12 +282,12 @@ function get-animemap-infos () {														# cache the catalog entry of $anil
 		format: .anilist.format,
 		episodes: .anilist.episodes,
 		season_year: .anilist.season_year,
-		season: null,
+		season: .anilist.season,
 		status: .anilist.status,
 		average_score: .anilist.average_score,
 		genres: ( .anilist.genres // [] ),
 		tags: [ .anilist.tags[]? | { name, rank } ],
-		studios: [],
+		studios: [ .anilist.studios[]? | if type == "object" then .name else . end ],
 		cover_image: .anilist.cover_image,
 		mal_id: .mal.id,
 		tvdb_id: .tvdb.id }' "$api_file" > "$data_file"
@@ -462,7 +462,7 @@ function get-studios() {
 	then
 		return 0
 	fi
-	get-mal-infos																		# the catalog knows no studio for about one entry in six, MAL usually does
+	get-mal-infos																		# anilist does not name a studio for every entry, MAL usually does
 	if [ -f "$SCRIPT_FOLDER/config/data/animemap-mal-$mal_id.json" ]
 	then
 		studio=$(jq '.data.studios | .[0].name // empty' -r "$SCRIPT_FOLDER/config/data/animemap-mal-$mal_id.json")
