@@ -21,32 +21,21 @@ fi
 printf "%s - Starting script\n\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
 download-animemap-data
 printf "%s - checking current season\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-if ! animemap-api-get "$ANIMEMAP_API_URL/seasons/now?limit=1" "$SCRIPT_FOLDER/config/tmp/this-season.json"
-then
-	printf "%s - Error can't read the current season stopping script\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-	exit 1
-fi
-season=$(jq '.entries[0].season // empty' -r "$SCRIPT_FOLDER/config/tmp/this-season.json")
-year=$(jq '.entries[0].season_year // empty' -r "$SCRIPT_FOLDER/config/tmp/this-season.json")
+# anilist files december under the next year's winter, which is what the catalog already reflects, so read the season off the entries that are releasing now
+season=$(jq -s '[ .[] | select( .status == "RELEASING" ) | select( .season != null and .season_year != null ) | "\(.season_year) \(.season)" ] | group_by(.) | max_by(length) | .[0]' -r "$ANIMEMAP_CATALOG"/*.json)
+year=$(printf %s "$season" | awk '{print $1}')
+season=$(printf %s "$season" | awk '{print $2}')
 if [[ -z $season ]] || [[ -z $year ]]
 then
-	printf "%s - Error the current season is empty stopping script\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
+	printf "%s - Error can't work out the current season stopping script\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
 	exit 1
 fi
 printf "%s - Current season : %s %s\n\n" "$(date +%H:%M:%S)" "$season" "$year" | tee -a "$LOG"
 printf "%s - Creating seasonal list\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-printf "%s\t - Downloading AnimeMap season list\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-seasonal_limit=$DOWNLOAD_LIMIT
-if [[ $seasonal_limit -gt $ANIMEMAP_PAGE_SIZE ]]									# the browse endpoint serves at most 100 entries per call
-then
-	seasonal_limit=$ANIMEMAP_PAGE_SIZE
-fi
-if ! animemap-api-get "$ANIMEMAP_API_URL/mapping/browse?year=$year&season=$season&format=TV&sort=score_desc&limit=$seasonal_limit" "$SCRIPT_FOLDER/config/tmp/seasonal-animemap.json"
-then
-	printf "%s - Error can't download the AnimeMap season list stopping script\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-	exit 1
-fi
-jq '.entries[].anilist_id' -r "$SCRIPT_FOLDER/config/tmp/seasonal-animemap.json" > "$SCRIPT_FOLDER/config/tmp/seasonal-animemap.tsv"
+printf "%s\t - Reading the season from the AnimeMap catalog\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
+jq -s --arg season "$season" --argjson year "$year" --argjson limit "$DOWNLOAD_LIMIT" '[ .[]
+	| select( .season == $season and .season_year == $year and .format == "TV" ) ]
+	| sort_by( - ( .average_score // 0 ) ) | .[0:$limit] | .[].anilist_id' -r "$ANIMEMAP_CATALOG"/*.json > "$SCRIPT_FOLDER/config/tmp/seasonal-animemap.tsv"
 printf "%s\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
 printf "%s\t - Sorting seasonal list\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
 while read -r anilist_id

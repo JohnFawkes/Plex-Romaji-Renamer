@@ -9,12 +9,12 @@ ANIMEMAP_API_URL=${ANIMEMAP_API_URL:-https://mapping.animemap.dev/api/v1}
 ANIMEMAP_API_KEY=${ANIMEMAP_API_KEY:-}
 ANIMEMAP_API_RETRY=${ANIMEMAP_API_RETRY:-4}
 ANILIST_TAGS_P=${ANILIST_TAGS_P:-70}
-ANIMEMAP_PAGE_SIZE=100
 ANIMEMAP_EXPORT="$SCRIPT_FOLDER/config/tmp/animemap-export.json"
 ANIMEMAP_ANIMES_ID="$SCRIPT_FOLDER/config/tmp/animemap-animes-id.json"
 ANIMEMAP_MOVIES_ID="$SCRIPT_FOLDER/config/tmp/animemap-movies-id.json"
 ANIMEMAP_AWARDS="$SCRIPT_FOLDER/config/tmp/animemap-awards.json"
-ANIMEMAP_CATALOG="$SCRIPT_FOLDER/config/tmp/animemap-catalog.json"
+ANIMEMAP_CATALOG="$SCRIPT_FOLDER/config/tmp/animemap-catalog"							# a directory of shards, see build-animemap-catalog
+ANIMEMAP_CATALOG_SHARDS=64
 
 # functions
 function create-override () {
@@ -35,7 +35,7 @@ function animemap-api-get () {															# $1 url / $2 output file, 0 = ok, 
 	fi
 	while [ $try -lt "$ANIMEMAP_API_RETRY" ];
 	do
-		http_code=$(curl -s --max-time 300 "${api_key_header[@]}" -o "$output" -w "%{http_code}" "$url")
+		http_code=$(curl -s --max-time 300 --compressed "${api_key_header[@]}" -o "$output" -w "%{http_code}" "$url")
 		if [[ $http_code == "200" ]]
 		then
 			return 0
@@ -63,8 +63,8 @@ function animemap-api-get () {															# $1 url / $2 output file, 0 = ok, 
 	rm -f "$output"
 	return 1
 }
-function download-animemap-data () {
-	printf "%s - Downloading AnimeMap export\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
+function download-animemap-data () {													# one download answers offline what would otherwise be a request per anime
+	printf "%s - Downloading the AnimeMap export\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
 	if ! animemap-api-get "$ANIMEMAP_API_URL/export.json" "$ANIMEMAP_EXPORT"
 	then
 		printf "%s - Error can't download the AnimeMap export stopping script\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
@@ -105,57 +105,31 @@ function download-animemap-data () {
 		| .anilist_id as $anilist_id
 		| .awards[]?
 		| { anilist_id: $anilist_id, year: ( .year | tostring ), cr_award: .award } ]' "$ANIMEMAP_EXPORT" > "$ANIMEMAP_AWARDS"
-	rm -f "$ANIMEMAP_EXPORT"
 	printf "%s\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-	download-animemap-catalog
-}
-function download-animemap-catalog () {													# the metadata (titles, score, genres, studios, season, status, poster) of the whole catalog
-	local pages="$SCRIPT_FOLDER/config/tmp/animemap-catalog-pages.json"
-	local page="$SCRIPT_FOLDER/config/tmp/animemap-catalog-page.json"
-	local offset=0
-	local total=0
-	local count=0
-	printf "%s - Downloading the AnimeMap catalog\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-	:> "$pages"
-	while true;
-	do
-		if ! animemap-api-get "$ANIMEMAP_API_URL/mapping/browse?sort=anilist_id&limit=$ANIMEMAP_PAGE_SIZE&offset=$offset" "$page"
-		then
-			printf "%s - Error can't download the AnimeMap catalog stopping script\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-			exit 1
-		fi
-		total=$(jq -r '.total // 0' "$page")
-		count=$(jq -r '.entries | length' "$page")
-		jq -c '.entries[]' "$page" >> "$pages"
-		offset=$((offset + count))
-		if [[ $count -eq 0 ]] || [[ $offset -ge $total ]]
-		then
-			break
-		fi
-		if [[ $((offset % 2000)) -lt $ANIMEMAP_PAGE_SIZE ]]
-		then
-			printf "%s\t - %s / %s entries\n" "$(date +%H:%M:%S)" "$offset" "$total" | tee -a "$LOG"
-		fi
-	done
-	printf "%s\t - Sorting the AnimeMap catalog\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-	jq -s -c 'map( { key: ( .anilist_id | tostring ),
-		value: { anilist_id: .anilist_id,
+	printf "%s - Building the AnimeMap catalog\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
+	# the export carries the whole anilist block, tags included and uncut, so nothing here needs a second request.
+	# it is split into shards by anilist id so a per anime read parses a slice rather than the whole catalog
+	rm -rf "$ANIMEMAP_CATALOG"
+	mkdir -p "$ANIMEMAP_CATALOG"
+	jq -r --argjson shards "$ANIMEMAP_CATALOG_SHARDS" '.entries[]
+		| select( .anilist_id != null )
+		| "\( .anilist_id % $shards )\t\( { anilist_id: .anilist_id,
 			title_romaji: .title_romaji,
 			title_english: .title_english,
 			title_native: .title_native,
 			format: .format,
-			episodes: .episodes,
 			season_year: .season_year,
 			season: .season,
 			status: .status,
 			average_score: .average_score,
 			genres: ( .genres // [] ),
-			tags: null,																	# browse serves 10 tags and hides the spoilers, get-anilist-tags-full fetches the real list
+			tags: [ .tags[]? | { name, rank } ],
 			studios: ( .studios // [] ),
 			cover_image: .cover_image,
-			mal_id: .mal_id,
-			tvdb_id: .tvdb_id } } ) | from_entries' "$pages" > "$ANIMEMAP_CATALOG"
-	rm -f "$pages" "$page"
+			mal_id: .mal.id,
+			tvdb_id: .tvdb.id } | tojson )"' "$ANIMEMAP_EXPORT" \
+	| awk -F'\t' -v dir="$ANIMEMAP_CATALOG" '{ file = dir "/" $1 ".json"; print $2 >> file }'
+	rm -f "$ANIMEMAP_EXPORT"
 	printf "%s\t - Done\n\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
 }
 function get-anilist-userlist {															# the one call left to the anilist API, AnimeMap serves no per user list
@@ -267,9 +241,10 @@ function get-animemap-infos () {														# cache the catalog entry of $anil
 	then
 		return 0
 	fi
-	if [ -f "$ANIMEMAP_CATALOG" ]
+	local shard="$ANIMEMAP_CATALOG/$(( anilist_id % ANIMEMAP_CATALOG_SHARDS )).json"
+	if [ -f "$shard" ]
 	then
-		jq -c --arg anilist_id "$anilist_id" '.[$anilist_id] // empty' "$ANIMEMAP_CATALOG" > "$data_file"
+		jq -c --argjson anilist_id "$anilist_id" 'select( .anilist_id == $anilist_id )' "$shard" | head -n 1 > "$data_file"
 		if [ -s "$data_file" ]
 		then
 			return 0
@@ -450,37 +425,8 @@ function get-mal-score () {
 		anime_score=0
 	fi
 }
-function get-anilist-tags-full () {														# the tags of $anilist_id, spoilers included, straight from the per id endpoint
-	local data_file="$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json"
-	local api_file="$SCRIPT_FOLDER/config/tmp/animemap-tags.json"
-	local tags_mal_id=""
-	local tags_mal_file=""
-	if ! jq -e '.tags == null' "$data_file" > /dev/null								# a null tag list is one that was never fetched
-	then
-		return 0
-	fi
-	printf "%s\t\t - Downloading the tags for animemap : %s\n" "$(date +%H:%M:%S)" "$anilist_id" | tee -a "$LOG"
-	if ! animemap-api-get "$ANIMEMAP_API_URL/mapping/anilist/$anilist_id?include_spoilers=true" "$api_file"
-	then
-		printf "%s\t\t - Can't download the tags for : %s skipping\n" "$(date +%H:%M:%S)" "$anilist_id" | tee -a "$LOG"
-		return 0
-	fi
-	jq -c --slurpfile mapping "$api_file" '.tags = [ $mapping[0].mapping.anilist.tags[]? | { name, rank } ]' "$data_file" > "$data_file.tmp" && mv "$data_file.tmp" "$data_file"
-	tags_mal_id=$(jq '.mapping.mal.id // empty' -r "$api_file")						# the same answer carries the MAL data, keep it rather than asking twice
-	if [[ -n $tags_mal_id ]]
-	then
-		tags_mal_file="$SCRIPT_FOLDER/config/data/animemap-mal-$tags_mal_id.json"
-		if [ ! -f "$tags_mal_file" ] && ! jq -e '.mapping.mal.data == null' "$api_file" > /dev/null
-		then
-			jq -c '{ data: .mapping.mal.data }' "$api_file" > "$tags_mal_file"
-		fi
-	fi
-	rm -f "$api_file"
-	printf "%s\t\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-}
 function get-animemap-tags () {															# the anilist genres, plus the tags ranked at or above ANILIST_TAGS_P
 	get-animemap-infos
-	get-anilist-tags-full
 	anime_tags=$( (jq '.genres | .[]' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json" && jq --argjson anilist_tags_p "$ANILIST_TAGS_P" '.tags // [] | .[] | select( .rank >= $anilist_tags_p ) | .name' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json") | awk '{print $0}' | paste -sd ',')
 }
 function get-mal-tags () {

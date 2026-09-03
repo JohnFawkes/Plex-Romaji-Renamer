@@ -103,31 +103,11 @@ printf "%s\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
 printf "%s - Done\n\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
 
 # Create an ongoing list at $SCRIPT_FOLDER/config/data/ongoing.tsv
-printf "%s - Creating AnimeMap airing list\n" "$(date +%H:%M:%S)"
+printf "%s - Creating the AnimeMap airing list\n" "$(date +%H:%M:%S)"
 :> "$SCRIPT_FOLDER/config/data/ongoing.tsv"
-:> "$SCRIPT_FOLDER/config/tmp/ongoing-tmp.tsv"
-ongoingoffset=0
-ongoingtotal=0
-ongoingcount=0
-while true;																		# get every releasing anime from the AnimeMap API
-do
-	printf "%s\t - Downloading AnimeMap airing list from : %s\n" "$(date +%H:%M:%S)" "$ongoingoffset" | tee -a "$LOG"
-	if ! animemap-api-get "$ANIMEMAP_API_URL/mapping/browse?sort=anilist_id&limit=$ANIMEMAP_PAGE_SIZE&offset=$ongoingoffset&status=RELEASING" "$SCRIPT_FOLDER/config/tmp/ongoing-animemap.json"
-	then
-		printf "%s - Error can't download the AnimeMap airing list stopping script\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-		exit 1
-	fi
-	ongoingtotal=$(jq -r '.total // 0' "$SCRIPT_FOLDER/config/tmp/ongoing-animemap.json")
-	ongoingcount=$(jq -r '.entries | length' "$SCRIPT_FOLDER/config/tmp/ongoing-animemap.json")
-	jq '.entries[].anilist_id' -r "$SCRIPT_FOLDER/config/tmp/ongoing-animemap.json" >> "$SCRIPT_FOLDER/config/tmp/ongoing-tmp.tsv"		# store the anilist ID of the ongoing show
-	ongoingoffset=$((ongoingoffset + ongoingcount))
-	printf "%s\t - done\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-	if [[ $ongoingcount -eq 0 ]] || [[ $ongoingoffset -ge $ongoingtotal ]]		# stop if page is empty
-	then
-		break
-	fi
-done
-	printf "%s\t - Sorting AnimeMap airing list \n" "$(date +%H:%M:%S)" | tee -a "$LOG"
+printf "%s\t - Reading the releasing animes from the AnimeMap catalog\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
+jq 'select( .status == "RELEASING" ) | .anilist_id' -r "$ANIMEMAP_CATALOG"/*.json > "$SCRIPT_FOLDER/config/tmp/ongoing-tmp.tsv"
+printf "%s\t - Sorting the AnimeMap airing list \n" "$(date +%H:%M:%S)" | tee -a "$LOG"
 sort -n "$SCRIPT_FOLDER/config/tmp/ongoing-tmp.tsv" | uniq > "$SCRIPT_FOLDER/config/tmp/ongoing.tsv"
 while read -r anilist_id
 do

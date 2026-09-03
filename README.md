@@ -74,18 +74,20 @@ Designed for Plex TV agent / Plex Movie Agent, <b>Hama is unsupported</b>
 
  ## How it works:
   - Romaji-Renamer will export your Animes and TVDB/IMDB IDs from Plex with python plexapi
-  - Then it will retrieve their MAL/Anilist IDs from the AnimeMap export https://mapping.animemap.dev/api/v1/export.json
-  - Use the AnimeMap API https://animemap.dev/docs to get the Anilist and MAL metadata, the anilist API is only called for your own userlists
+  - Then it downloads the AnimeMap export once https://mapping.animemap.dev/api/v1/export.json, which carries the ids, the TVDB seasons and offsets and the whole Anilist block (score, genres, the complete tag list, studios, season, status, awards)
+  - Everything else is answered from that file offline. Only the live MyAnimeList data needs a request per anime, and the anilist API is called only for your own userlists
   - Create and update a Kometa metadata file to import everything in to your Plex when Kometa runs.
 
 > **An API key is needed.** `mapping.animemap.dev` answers `401` without one on every endpoint except `browse`. Register an account and create a key at `https://mapping.animemap.dev/api/v1/auth/keys` (it is shown once), then put it in `ANIMEMAP_API_KEY` in your `.env`. `https://mapping.animemap.dev/health` reports `api_key_required` so you can check whether your instance needs one.
 
 ### Moving from the Anilist and Jikan APIs to AnimeMap
-All the metadata now comes from [animemap.dev](https://animemap.dev/docs), nothing is asked of a MAL API directly and the Jikan and myanimelist.net calls are gone. Every setting works as it did before, so an existing `.env` needs no change.
+All the metadata now comes from [animemap.dev](https://animemap.dev/docs), nothing is asked of a MAL API directly and the Jikan and myanimelist.net calls are gone. Every setting works as it did before, `ANIMEMAP_API_KEY` aside.
+
+A run makes **one** bulk request. `GET /api/v1/export.json` is built for exactly this - "a consumer can download this once and answer offline what would otherwise be one request per anime" - so the id maps, the metadata, the airing list and the seasonal list are all read out of that single file. Only the live MyAnimeList block still needs `GET /api/v1/mapping/{source}/{id}` per anime, and only when a MAL source is configured.
 
 `ANILIST_LISTS` is the one feature still served by the Anilist API : reading your own list needs `graphql.anilist.co` and AnimeMap has no equivalent, so `get-anilist-userlist` still calls it when `ANILIST_LISTS=Yes` and the `Completed` / `Watching` / `Dropped` / `Paused` / `Planning` labels are written as before. With `ANILIST_LISTS=No` (the default) nothing is sent to Anilist at all.
 
-`ANILIST_TAGS_P` works as before : AnimeMap serves the Anilist tags with their rank. They are read from the per id endpoint with `include_spoilers=true`, not from the catalog download : `browse` returns the 10 top ranked tags only **and** drops the tags flagged as spoilers (Evangelion loses 15 of them, Death Note 6), and the old Anilist query kept both. The answer is cached per anime like the rest, so it is fetched once per `DATA_CACHE_TIME` and reused.
+`ANILIST_TAGS_P` works as before : the export carries the complete tag list with the ranks and the spoiler tags included, so nothing extra is fetched for them (Evangelion 44 tags, One Piece 75).
 
 The airing status is the one behaviour that changed : AnimeMap carries no Anilist relation, so instead of walking the sequel chain a serie is labelled `Planned` when any entry of its TVDB serie is still unreleased.
 

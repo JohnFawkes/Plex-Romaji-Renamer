@@ -1,0 +1,17 @@
+# runtime config, holds the plex token and the AnimeMap API key
+config/.env
+config/override-ID-animes.tsv
+config/override-ID-movies.tsv
+config/version_last_run.txt
+
+# generated at runtime
+config/tmp/
+config/data/
+config/ID/
+config/logs/
+pmm/
+
+# python
+__pycache__/
+romaji-renamer-venv/
+venv/
