@@ -6,6 +6,7 @@ MATCH_LOG=$LOG_FOLDER/${media_type}-missing-id.log
 
 #AnimeMap API (https://animemap.dev/docs)
 ANIMEMAP_API_URL=${ANIMEMAP_API_URL:-https://mapping.animemap.dev/api/v1}
+ANIMEMAP_API_KEY=${ANIMEMAP_API_KEY:-}
 ANIMEMAP_API_RETRY=${ANIMEMAP_API_RETRY:-4}
 ANILIST_TAGS_P=${ANILIST_TAGS_P:-70}
 ANIMEMAP_PAGE_SIZE=100
@@ -27,15 +28,30 @@ function animemap-api-get () {															# $1 url / $2 output file, 0 = ok, 
 	local output="$2"
 	local try=0
 	local http_code=""
+	local -a api_key_header=()
+	if [[ -n $ANIMEMAP_API_KEY ]]														# the key travels in a header, never in the url, so it stays out of the logs
+	then
+		api_key_header=(-H "X-API-Key: $ANIMEMAP_API_KEY")
+	fi
 	while [ $try -lt "$ANIMEMAP_API_RETRY" ];
 	do
-		http_code=$(curl -s --max-time 300 -o "$output" -w "%{http_code}" "$url")
+		http_code=$(curl -s --max-time 300 "${api_key_header[@]}" -o "$output" -w "%{http_code}" "$url")
 		if [[ $http_code == "200" ]]
 		then
 			return 0
 		elif [[ $http_code == "404" ]]
 		then
 			return 2
+		elif [[ $http_code == "401" ]] || [[ $http_code == "403" ]]						# a credential problem never fixes itself, don't burn the retries on it
+		then
+			if [[ -z $ANIMEMAP_API_KEY ]]
+			then
+				printf "%s - The AnimeMap deployment requires an API key, set ANIMEMAP_API_KEY in your .env (create one at %s/auth/keys)\n" "$(date +%H:%M:%S)" "$ANIMEMAP_API_URL" | tee -a "$LOG"
+			else
+				printf "%s - The AnimeMap API refused the key in ANIMEMAP_API_KEY (%s)\n" "$(date +%H:%M:%S)" "$http_code" | tee -a "$LOG"
+			fi
+			rm -f "$output"
+			return 1
 		fi
 		((try++))
 		if [ $try -lt "$ANIMEMAP_API_RETRY" ]
@@ -134,7 +150,7 @@ function download-animemap-catalog () {													# the metadata (titles, scor
 			status: .status,
 			average_score: .average_score,
 			genres: ( .genres // [] ),
-			tags: [ .tags[]? | { name, rank } ],
+			tags: null,																	# browse serves 10 tags and hides the spoilers, get-anilist-tags-full fetches the real list
 			studios: ( .studios // [] ),
 			cover_image: .cover_image,
 			mal_id: .mal_id,
@@ -232,7 +248,7 @@ function animemap-empty-record () {														# a full record with every fiel
 		status: null,
 		average_score: null,
 		genres: [],
-		tags: [],
+		tags: null,
 		studios: [],
 		cover_image: null,
 		mal_id: null,
@@ -269,7 +285,7 @@ function get-animemap-infos () {														# cache the catalog entry of $anil
 	else
 		printf "%s\t\t - Downloading data for animemap : %s\n" "$(date +%H:%M:%S)" "$anilist_id" | tee -a "$LOG"
 	fi
-	animemap-api-get "$ANIMEMAP_API_URL/mapping/anilist/$anilist_id" "$api_file"
+	animemap-api-get "$ANIMEMAP_API_URL/mapping/anilist/$anilist_id?include_spoilers=true" "$api_file"
 	api_status=$?
 	if [[ $api_status == 1 ]]
 	then
@@ -327,7 +343,7 @@ function get-mal-infos () {																# the MyAnimeList data AnimeMap serve
 	else
 		printf "%s\t\t - Downloading data for MAL : %s\n" "$(date +%H:%M:%S)" "$mal_id" | tee -a "$LOG"
 	fi
-	if ! animemap-api-get "$ANIMEMAP_API_URL/mapping/anilist/$anilist_id" "$api_file"
+	if ! animemap-api-get "$ANIMEMAP_API_URL/mapping/anilist/$anilist_id?include_spoilers=true" "$api_file"
 	then
 		printf "%s\t\t - Can't download MAL data for : %s skipping\n" "$(date +%H:%M:%S)" "$mal_id" | tee -a "$LOG"
 		return 0
@@ -434,35 +450,38 @@ function get-mal-score () {
 		anime_score=0
 	fi
 }
-function get-full-tags () {																# browse serves the 10 top ranked tags only, the per id endpoint serves them all
+function get-anilist-tags-full () {														# the tags of $anilist_id, spoilers included, straight from the per id endpoint
 	local data_file="$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json"
 	local api_file="$SCRIPT_FOLDER/config/tmp/animemap-tags.json"
-	local tags_count=0
-	local lowest_rank=0
-	tags_count=$(jq '.tags | length' -r "$data_file")
-	if [[ $tags_count -lt 10 ]]															# a short list was never cut, everything anilist knows is already there
+	local tags_mal_id=""
+	local tags_mal_file=""
+	if ! jq -e '.tags == null' "$data_file" > /dev/null								# a null tag list is one that was never fetched
 	then
 		return 0
 	fi
-	lowest_rank=$(jq '.tags | .[-1].rank // 0' -r "$data_file")
-	if [[ $lowest_rank -lt $ANILIST_TAGS_P ]]											# the cut only dropped tags ranked under the threshold
+	printf "%s\t\t - Downloading the tags for animemap : %s\n" "$(date +%H:%M:%S)" "$anilist_id" | tee -a "$LOG"
+	if ! animemap-api-get "$ANIMEMAP_API_URL/mapping/anilist/$anilist_id?include_spoilers=true" "$api_file"
 	then
-		return 0
-	fi
-	printf "%s\t\t - Downloading the full tag list for animemap : %s\n" "$(date +%H:%M:%S)" "$anilist_id" | tee -a "$LOG"
-	if ! animemap-api-get "$ANIMEMAP_API_URL/mapping/anilist/$anilist_id" "$api_file"
-	then
-		printf "%s\t\t - Can't download the tags for : %s keeping the %s top ranked ones\n" "$(date +%H:%M:%S)" "$anilist_id" "$tags_count" | tee -a "$LOG"
+		printf "%s\t\t - Can't download the tags for : %s skipping\n" "$(date +%H:%M:%S)" "$anilist_id" | tee -a "$LOG"
 		return 0
 	fi
 	jq -c --slurpfile mapping "$api_file" '.tags = [ $mapping[0].mapping.anilist.tags[]? | { name, rank } ]' "$data_file" > "$data_file.tmp" && mv "$data_file.tmp" "$data_file"
+	tags_mal_id=$(jq '.mapping.mal.id // empty' -r "$api_file")						# the same answer carries the MAL data, keep it rather than asking twice
+	if [[ -n $tags_mal_id ]]
+	then
+		tags_mal_file="$SCRIPT_FOLDER/config/data/animemap-mal-$tags_mal_id.json"
+		if [ ! -f "$tags_mal_file" ] && ! jq -e '.mapping.mal.data == null' "$api_file" > /dev/null
+		then
+			jq -c '{ data: .mapping.mal.data }' "$api_file" > "$tags_mal_file"
+		fi
+	fi
 	rm -f "$api_file"
 	printf "%s\t\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
 }
 function get-animemap-tags () {															# the anilist genres, plus the tags ranked at or above ANILIST_TAGS_P
 	get-animemap-infos
-	get-full-tags
-	anime_tags=$( (jq '.genres | .[]' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json" && jq --argjson anilist_tags_p "$ANILIST_TAGS_P" '.tags | .[] | select( .rank >= $anilist_tags_p ) | .name' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json") | awk '{print $0}' | paste -sd ',')
+	get-anilist-tags-full
+	anime_tags=$( (jq '.genres | .[]' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json" && jq --argjson anilist_tags_p "$ANILIST_TAGS_P" '.tags // [] | .[] | select( .rank >= $anilist_tags_p ) | .name' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json") | awk '{print $0}' | paste -sd ',')
 }
 function get-mal-tags () {
 	anime_tags=""
