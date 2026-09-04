@@ -457,6 +457,43 @@ function get-animes-award () {
 		fi
 	fi
 }
+function get-announced-sequel () {														# a just announced season usually has no tvdb id yet, so the tvdb entries cannot find it
+	local api_file="$SCRIPT_FOLDER/config/tmp/animemap-search.json"
+	local search_file="$SCRIPT_FOLDER/config/data/animemap-search-$anilist_id.json"
+	local search_title=""
+	local query=""
+	local candidate=""
+	announced_sequel="no"
+	search_title=$(jq '.title_romaji // empty' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json")
+	if [[ -z $search_title ]]
+	then
+		return 0
+	fi
+	if [ ! -f "$search_file" ]
+	then
+		query=$(jq -rn --arg title "$search_title" '$title | @uri')
+		printf "%s\t\t - Looking for an announced sequel of : %s\n" "$(date +%H:%M:%S)" "$search_title" | tee -a "$LOG" >&2
+		if ! animemap-api-get "$ANIMEMAP_API_URL/search?q=$query&limit=25" "$api_file"
+		then
+			printf "%s\t\t - Can't search for : %s skipping\n" "$(date +%H:%M:%S)" "$search_title" | tee -a "$LOG" >&2
+			return 0
+		fi
+		# nothing unreleased is dated before the current year, so this drops the back catalogue without dropping a candidate
+		jq -c --argjson year "$(date +%Y)" '[ .anilist[]? | select( .mapping.season_year == null or .mapping.season_year >= $year ) | .id ]' "$api_file" > "$search_file"
+		rm -f "$api_file"
+	fi
+	local anilist_backup_id=$anilist_id
+	for candidate in $(jq '.[]' -r "$search_file")
+	do
+		anilist_id=$candidate
+		get-animemap-infos
+		case $(jq '.status // empty' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json") in
+			RELEASING)			announced_sequel="airing"; break ;;
+			NOT_YET_RELEASED)	announced_sequel="planned" ;;
+		esac
+	done
+	anilist_id=$anilist_backup_id
+}
 function get-airing-status () {															# AnimeMap carries no anilist relation, so the entries of the tvdb serie stand in for the sequel chain
 	local IFS=$' \t\n'																		# get-season-infos splits on commas, the ids read below are one per line
 	local anilist_backup_id=$anilist_id
@@ -497,6 +534,18 @@ function get-airing-status () {															# AnimeMap carries no anilist rela
 		fi
 	done
 	anilist_id=$anilist_backup_id
+	if [[ $airing_status != "Ended" ]]													# only a serie that looks finished is worth the search
+	then
+		return 0
+	fi
+	get-announced-sequel
+	if [[ $announced_sequel == "airing" ]]
+	then
+		airing_status="Airing"
+	elif [[ $announced_sequel == "planned" ]]
+	then
+		airing_status="Planned"
+	fi
 }
 function get-poster-url () {
 	poster_url=""

@@ -91,7 +91,7 @@ Four endpoints are used, all of them documented :
   - `mapping/anilist/{id}` - one entry's metadata and its live MyAnimeList data
   - `seasons/now` - the only list that is not about your library, used by the seasonal download script
 
-The airing status is the one behaviour that changed : AnimeMap carries no Anilist relation, so instead of walking the sequel chain a serie takes the status of the entries filed under its TVDB id - `Airing` if any is releasing, else `Planned` if any is announced, else `Ended`.
+The airing status is the one behaviour that changed : AnimeMap carries no Anilist relation, so the sequel chain is reconstructed from two things instead. First the entries filed under the serie's own TVDB id, then - only for a serie that still looks finished - a title search, because a season announced but not yet aired usually has no TVDB id yet and so cannot be found the first way. A serie is `Airing` if any of them is releasing, else `Planned` if any is announced, else `Ended`.
 
 `ANILIST_LISTS` is the one feature still served by the Anilist API : reading your own list needs `graphql.anilist.co` and AnimeMap has no equivalent, so `get-anilist-userlist` still calls it when `ANILIST_LISTS=Yes` and the `Completed` / `Watching` / `Dropped` / `Paused` / `Planning` labels are written as before. With `ANILIST_LISTS=No` (the default) nothing is sent to Anilist at all.
 
