@@ -457,6 +457,12 @@ function get-animes-award () {
 		fi
 	fi
 }
+function entry-is-a-return () {															# a movie, an OVA or a one off special is not the serie coming back, a season in any serie format is
+	case $(jq '.format // "null"' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json") in
+		TV|TV_SHORT|ONA|null)	return 0 ;;
+		*)						return 1 ;;
+	esac
+}
 function get-announced-sequel () {														# a just announced season usually has no tvdb id yet, so the tvdb entries cannot find it
 	local api_file="$SCRIPT_FOLDER/config/tmp/animemap-search.json"
 	local search_file="$SCRIPT_FOLDER/config/data/animemap-search-$anilist_id.json"
@@ -487,6 +493,10 @@ function get-announced-sequel () {														# a just announced season usuall
 	do
 		anilist_id=$candidate
 		get-animemap-infos
+		if ! entry-is-a-return
+		then
+			continue
+		fi
 		case $(jq '.status // empty' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json") in
 			RELEASING)			announced_sequel="airing"; break ;;
 			NOT_YET_RELEASED)	announced_sequel="planned" ;;
@@ -522,6 +532,10 @@ function get-airing-status () {															# AnimeMap carries no anilist rela
 	do
 		anilist_id=$sequel_id
 		get-animemap-infos
+		if ! entry-is-a-return
+		then
+			continue
+		fi
 		entry_status=$(jq '.status // empty' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json")
 		if [[ $entry_status == "RELEASING" ]]											# something of this serie on air outranks something merely announced
 		then
