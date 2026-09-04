@@ -59,7 +59,8 @@ function animemap-api-get () {															# $1 url / $2 output file, 0 = ok, 
 }
 function get-animemap-tvdb-lookup () {													# every entry carrying $tvdb_id, cached, sets $tvdb_map_file
 	tvdb_map_file="$SCRIPT_FOLDER/config/data/animemap-tvdb-$tvdb_id.json"
-	if [ -f "$tvdb_map_file" ]
+	# a cache written before the format and offset keys existed cannot answer the season 0 fallback, so it is downloaded again
+	if [ -f "$tvdb_map_file" ] && jq -e 'length == 0 or ( .[0] | has( "tvdb_epoffset_null" ) )' "$tvdb_map_file" > /dev/null 2>&1
 	then
 		return 0
 	fi
@@ -76,6 +77,8 @@ function get-animemap-tvdb-lookup () {													# every entry carrying $tvdb_
 		| { tvdb_id: $tvdb_id,
 			tvdb_season: ( if ( .tvdb.season | type ) == "number" then ( .tvdb.season | tostring ) else "-1" end ),
 			tvdb_epoffset: ( ( .tvdb.episode_offset // 0 ) | tostring ),
+			tvdb_epoffset_null: ( .tvdb.episode_offset == null ),
+			format: ( ( .format // "" ) | tostring ),
 			anidb_id: ( ( .anidb.id // "" ) | tostring ),
 			mal_id: ( ( .mal.id // "" ) | tostring ),
 			anilist_id: ( .anilist_id | tostring ) } ]' "$api_file" > "$tvdb_map_file"
@@ -164,7 +167,16 @@ function get-anilist-id () {
 	if [[ $media_type == "animes" ]]
 	then
 		get-animemap-tvdb-lookup
-		jq '.[] | select( .tvdb_season == "1" or .tvdb_season == "-1" ) | select( .tvdb_epoffset == "0" ) | .anilist_id' -r "$tvdb_map_file" | head -n 1
+		# AnimeMap files plenty of first seasons at tvdb season 0, so the season 1 entry the old mapping always carried is often not there.
+		# when no entry answers the season 1 filter, fall back to the oldest serie entry, a TV before a TV_SHORT before an ONA,
+		# then to the oldest entry of any format, the API listing them oldest season first with the undated ones last
+		jq -r '[ .[] | select( ( .tvdb_season == "1" or .tvdb_season == "-1" ) and .tvdb_epoffset == "0" ) ] as $season_one
+			| ( [ .[] | select( .format == "TV" or .format == "TV_SHORT" or .format == "ONA" ) ]
+				| to_entries
+				| sort_by( [ ( if .value.format == "TV" then 0 elif .value.format == "TV_SHORT" then 1 else 2 end ), .key ] )
+				| map( .value ) ) as $series
+			| ( if ( $season_one | length ) > 0 then $season_one elif ( $series | length ) > 0 then $series else . end )
+			| .[0].anilist_id // empty' "$tvdb_map_file"
 	else
 		get-animemap-imdb-lookup
 		jq '.[0].anilist_id // empty' -r "$imdb_map_file"
@@ -845,6 +857,18 @@ function check-rating-2-valid () {
 		fi
 	fi
 }
+function tvdb-season-entries () {														# the entries filed under tvdb season $1, as a json array
+	# a first season AnimeMap could not place lands at tvdb season 0 carrying no episode offset, which is also where the real specials sit,
+	# so only a serie entry with no offset at all is read as the season 1 the mapping is missing
+	jq -c --arg season_number "$1" '[ .[] | select( .tvdb_season == $season_number ) ] as $season
+		| if ( $season | length ) > 0 then $season
+			elif $season_number == "1"
+			then ( [ .[] | select( .tvdb_season == "0" and .tvdb_epoffset_null and ( .format == "TV" or .format == "TV_SHORT" or .format == "ONA" ) ) ]
+				| to_entries
+				| sort_by( [ ( if .value.format == "TV" then 0 elif .value.format == "TV_SHORT" then 1 else 2 end ), .key ] )
+				| map( .value )[0:1] )
+			else [] end' "$tvdb_map_file"
+}
 function get-season-infos () {
 	override_id=""
 	anilist_backup_id=$anilist_id
@@ -884,7 +908,7 @@ function get-season-infos () {
 				printf "      0:\n        label.remove: Score\n" >> "$METADATA"
 			else
 				season_loop=1
-				anilist_ids=$(jq --arg season_number "$season_number" '[.[] | select( .tvdb_season == $season_number )] | sort_by(.tvdb_epoffset) | .[].anilist_id' -r "$tvdb_map_file" | paste -s -d, -)
+				anilist_ids=$(tvdb-season-entries "$season_number" | jq -r 'sort_by(.tvdb_epoffset) | .[].anilist_id' | paste -s -d, -)
 				if [ -n "$override_id" ] && [[ $season_number -eq 1 ]]
 				then
 					anilist_ids=$anilist_backup_id
@@ -991,7 +1015,7 @@ function get-season-infos () {
 					fi
 				fi
 				cours_count_total=0
-				anilist_id=$(jq --arg season_number "$season_number" '.[] | select( .tvdb_season == $season_number ) | select( .tvdb_epoffset == "0" ) | .anilist_id' -r "$tvdb_map_file" | head -n 1)
+				anilist_id=$(tvdb-season-entries "$season_number" | jq -r '.[] | select( .tvdb_epoffset == "0" ) | .anilist_id' | head -n 1)
 				if [ -n "$override_id" ] && [[ $season_number -eq 1 ]]
 				then
 					anilist_id=$anilist_backup_id 
