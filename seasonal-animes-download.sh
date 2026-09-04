@@ -19,42 +19,45 @@ fi
 
 #SCRIPT
 printf "%s - Starting script\n\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-download-anime-id-mapping
-printf "%s - checking current season\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-curl -s -L -A "Mozilla/5.0 (X11; Linux x86_64)" "https://myanimelist.net/anime/season" -o "$SCRIPT_FOLDER/config/tmp/this-season.html"
-season=$(awk -v IGNORECASE=1 -v RS='</title' 'RT{gsub(/.*<title[^>]*>/,"");print;exit}' "$SCRIPT_FOLDER/config/tmp/this-season.html" | awk '{print $1}'| tr '[:lower:]' '[:upper:]'| tr -d '\n')
-year=$(awk -v IGNORECASE=1 -v RS='</title' 'RT{gsub(/.*<title[^>]*>/,"");print;exit}' "$SCRIPT_FOLDER/config/tmp/this-season.html" | awk '{print $2}'| tr -d '\n')
+printf "%s - Downloading the current season\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
+# the only list here that is not about the plex library, so it is the one thing still asked of the API in bulk.
+# anilist files december under the next year's winter and /seasons/now accounts for it, which a date computed here would not.
+if ! animemap-api-get "$ANIMEMAP_API_URL/seasons/now?limit=100" "$SCRIPT_FOLDER/config/tmp/this-season.json"
+then
+	printf "%s - Error can't download the current season stopping script\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
+	exit 1
+fi
+season=$(jq '.entries[0].season // empty' -r "$SCRIPT_FOLDER/config/tmp/this-season.json")
+year=$(jq '.entries[0].season_year // empty' -r "$SCRIPT_FOLDER/config/tmp/this-season.json")
+if [[ -z $season ]] || [[ -z $year ]]
+then
+	printf "%s - Error the current season is empty stopping script\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
+	exit 1
+fi
 printf "%s - Current season : %s %s\n\n" "$(date +%H:%M:%S)" "$season" "$year" | tee -a "$LOG"
 printf "%s - Creating seasonal list\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-printf "%s\t - Downloading anilist season list\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-curl -s 'https://graphql.anilist.co/' \
--X POST \
--H 'content-type: application/json' \
---data '{ "query": "{ Page(page: 1, perPage: '"$DOWNLOAD_LIMIT"') { pageInfo { hasNextPage } media(type: ANIME, seasonYear: '"$year"' season: '"$season"', format: TV, sort: POPULARITY_DESC) { id } } }" }' | jq '.data.Page.media[] | .id' > "$SCRIPT_FOLDER/config/tmp/seasonal-anilist.tsv"
-printf "%s\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
+jq --argjson limit "$DOWNLOAD_LIMIT" '[ .entries[] | select( .format == "TV" ) ]
+	| sort_by( - ( .average_score // 0 ) ) | .[0:$limit] | .[].anilist_id' -r "$SCRIPT_FOLDER/config/tmp/this-season.json" > "$SCRIPT_FOLDER/config/tmp/seasonal-animemap.tsv"
 printf "%s\t - Sorting seasonal list\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
 while read -r anilist_id
 do
-	tvdb_id=a
-	tvdb_season=-a
-	tvdb_epoffset=a
-	tvdb_id=$(get-tvdb-id)
-	if [[ "$tvdb_id" == 'null' ]] || [[ "${#tvdb_id}" == '0' ]]
+	get-animemap-infos																	# the entry knows its own tvdb id, season and offset
+	tvdb_id=$(jq '.tvdb_id // empty' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json")
+	tvdb_season=$(jq '.tvdb_season // empty' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json")
+	tvdb_epoffset=$(jq '.tvdb_epoffset // empty' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json")
+	if [[ -z $tvdb_id ]]
 	then
 		printf "%s\t\t - Seasonal invalid TVDB ID for Anilist : %s\n" "$(date +%H:%M:%S)" "$anilist_id" | tee -a "$LOG"
 		continue
-	else
-		tvdb_season=$(jq --arg anilist_id "$anilist_id" '.[] | select( .anilist_id == $anilist_id ) | .tvdb_season' -r "$SCRIPT_FOLDER/config/tmp/list-animes-id.json")
-		tvdb_epoffset=$(jq --arg anilist_id "$anilist_id" '.[] | select( .anilist_id == $anilist_id ) | .tvdb_epoffset' -r "$SCRIPT_FOLDER/config/tmp/list-animes-id.json")
-		if [[ "$tvdb_season" -eq 1 ]] && [[ "$tvdb_epoffset" -eq 0 ]]
-		then
-			printf "%s\n" "$tvdb_id" >> "$SCRIPT_FOLDER/config/data/seasonal.tsv"
-			printf "%s\t\t - New seasonal anime adding to list : Anilist id : %s / tvdb id : %s\n" "$(date +%H:%M:%S)" "$anilist_id" "$tvdb_id" | tee -a "$LOG"
-		else
-			printf "%s\t\t - Sequel seasonal anime not adding to list : Anilist id : %s / tvdb id : %s\n" "$(date +%H:%M:%S)" "$anilist_id" "$tvdb_id" | tee -a "$LOG"
-		fi
 	fi
-done < "$SCRIPT_FOLDER/config/tmp/seasonal-anilist.tsv"
+	if [[ "$tvdb_season" -eq 1 ]] && [[ "$tvdb_epoffset" -eq 0 ]]
+	then
+		printf "%s\n" "$tvdb_id" >> "$SCRIPT_FOLDER/config/data/seasonal.tsv"
+		printf "%s\t\t - New seasonal anime adding to list : Anilist id : %s / tvdb id : %s\n" "$(date +%H:%M:%S)" "$anilist_id" "$tvdb_id" | tee -a "$LOG"
+	else
+		printf "%s\t\t - Sequel seasonal anime not adding to list : Anilist id : %s / tvdb id : %s\n" "$(date +%H:%M:%S)" "$anilist_id" "$tvdb_id" | tee -a "$LOG"
+	fi
+done < "$SCRIPT_FOLDER/config/tmp/seasonal-animemap.tsv"
 printf "%s - Done\n\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
 
 

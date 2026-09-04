@@ -4,6 +4,12 @@
 LOG=$LOG_FOLDER/RR_$(date +%Y.%m.%d).log
 MATCH_LOG=$LOG_FOLDER/${media_type}-missing-id.log
 
+#AnimeMap API (https://animemap.dev/docs)
+ANIMEMAP_API_URL=${ANIMEMAP_API_URL:-https://mapping.animemap.dev/api/v1}
+ANIMEMAP_API_KEY=${ANIMEMAP_API_KEY:-}
+ANIMEMAP_API_RETRY=${ANIMEMAP_API_RETRY:-4}
+ANILIST_TAGS_P=${ANILIST_TAGS_P:-70}
+
 # functions
 function create-override () {
 	if [ ! -f "$SCRIPT_FOLDER/config/$OVERRIDE" ]
@@ -11,51 +17,96 @@ function create-override () {
 		cp "$SCRIPT_FOLDER/config/override-ID-${media_type}.example.tsv" "$SCRIPT_FOLDER/config/$OVERRIDE"
 	fi
 }
-function download-anime-id-mapping () {
-	wait_time=0
-	while [ $wait_time -lt 5 ];
+function animemap-api-get () {															# $1 url / $2 output file, 0 = ok, 1 = failed, 2 = not found
+	local url="$1"
+	local output="$2"
+	local try=0
+	local http_code=""
+	local -a api_key_header=()
+	if [[ -n $ANIMEMAP_API_KEY ]]														# the key travels in a header, never in the url, so it stays out of the logs
+	then
+		api_key_header=(-H "X-API-Key: $ANIMEMAP_API_KEY")
+	fi
+	while [ $try -lt "$ANIMEMAP_API_RETRY" ];
 	do
-		printf "%s - Downloading animes mapping\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-		if [[ $media_type == "animes" ]]
+		http_code=$(curl -s --max-time 300 --compressed "${api_key_header[@]}" -o "$output" -w "%{http_code}" "$url")
+		if [[ $http_code == "200" ]]
 		then
-			curl -s "https://raw.githubusercontent.com/Arial-Z/Animes-ID/main/list-animes-id.json" > "$SCRIPT_FOLDER/config/tmp/list-animes-id.json"
-			size=$(du -b "$SCRIPT_FOLDER/config/tmp/list-animes-id.json" | awk '{ print $1 }')
-		else
-			curl -s "https://raw.githubusercontent.com/Arial-Z/Animes-ID/main/list-movies-id.json" > "$SCRIPT_FOLDER/config/tmp/list-movies-id.json"
-			size=$(du -b "$SCRIPT_FOLDER/config/tmp/list-movies-id.json" | awk '{ print $1 }')
+			return 0
+		elif [[ $http_code == "404" ]]
+		then
+			return 2
+		elif [[ $http_code == "401" ]] || [[ $http_code == "403" ]]						# a credential problem never fixes itself, don't burn the retries on it
+		then
+			if [[ -z $ANIMEMAP_API_KEY ]]
+			then
+				printf "%s - The AnimeMap deployment requires an API key, set ANIMEMAP_API_KEY in your .env (create one at %s/auth/keys)\n" "$(date +%H:%M:%S)" "$ANIMEMAP_API_URL" | tee -a "$LOG"
+			else
+				printf "%s - The AnimeMap API refused the key in ANIMEMAP_API_KEY (%s)\n" "$(date +%H:%M:%S)" "$http_code" | tee -a "$LOG"
+			fi
+			rm -f "$output"
+			return 1
 		fi
-		((wait_time++))
-		if [[ $wait_time == 4 ]]
+		((try++))
+		if [ $try -lt "$ANIMEMAP_API_RETRY" ]
 		then
-			printf "%s - Error can't download animes mapping file stopping script\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-			exit 1
-		elif [[ $size -gt 1000 ]]
-		then
-			printf "%s - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-			break
+			printf "%s\t\t - AnimeMap API answered %s for %s, waiting 30s\n" "$(date +%H:%M:%S)" "$http_code" "$url" | tee -a "$LOG"
+			sleep 30
 		fi
-		sleep 30
 	done
-	wait_time=0
-	while [ $wait_time -lt 5 ];
-	do
-		printf "%s - Downloading animes awards data\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-		curl -s "https://raw.githubusercontent.com/Arial-Z/Animes-ID/main/cr-award/cr-award.json" > "$SCRIPT_FOLDER/config/tmp/cr-award.json"
-		size=$(du -b "$SCRIPT_FOLDER/config/tmp/cr-award.json" | awk '{ print $1 }')
-		((wait_time++))
-		if [[ $wait_time == 4 ]]
-		then
-			printf "%s - Error can't download animes awards file stopping script\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-			exit 1
-		elif [[ $size -gt 1000 ]]
-		then
-			printf "%s - Done\n\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-			break
-		fi
-		sleep 30
-	done
+	rm -f "$output"
+	return 1
 }
-function get-anilist-userlist {
+function get-animemap-tvdb-lookup () {													# every entry carrying $tvdb_id, cached, sets $tvdb_map_file
+	tvdb_map_file="$SCRIPT_FOLDER/config/data/animemap-tvdb-$tvdb_id.json"
+	if [ -f "$tvdb_map_file" ]
+	then
+		return 0
+	fi
+	local api_file="$SCRIPT_FOLDER/config/tmp/animemap-lookup.json"
+	printf "%s\t\t - Downloading the entries of tvdb : %s\n" "$(date +%H:%M:%S)" "$tvdb_id" | tee -a "$LOG" >&2
+	if ! animemap-api-get "$ANIMEMAP_API_URL/mapping/lookup/tvdb/$tvdb_id" "$api_file"
+	then
+		printf "%s - Error can't read the entries of tvdb : %s stopping script\n" "$(date +%H:%M:%S)" "$tvdb_id" | tee -a "$LOG" >&2
+		exit 1
+	fi
+	# a tvdb season of "a" (absolute numbering) or none at all is kept as "-1", the value the season logic uses for "not split per tvdb season"
+	jq -c --arg tvdb_id "$tvdb_id" '[ .entries[]
+		| select( .anilist_id != null )
+		| { tvdb_id: $tvdb_id,
+			tvdb_season: ( if ( .tvdb.season | type ) == "number" then ( .tvdb.season | tostring ) else "-1" end ),
+			tvdb_epoffset: ( ( .tvdb.episode_offset // 0 ) | tostring ),
+			anidb_id: ( ( .anidb.id // "" ) | tostring ),
+			mal_id: ( ( .mal.id // "" ) | tostring ),
+			anilist_id: ( .anilist_id | tostring ) } ]' "$api_file" > "$tvdb_map_file"
+	rm -f "$api_file"
+	printf "%s\t\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG" >&2
+}
+function get-animemap-imdb-lookup () {													# every entry carrying $imdb_id, cached, sets $imdb_map_file
+	imdb_map_file="$SCRIPT_FOLDER/config/data/animemap-imdb-$imdb_id.json"
+	if [ -f "$imdb_map_file" ]
+	then
+		return 0
+	fi
+	local api_file="$SCRIPT_FOLDER/config/tmp/animemap-lookup.json"
+	printf "%s\t\t - Downloading the entries of imdb : %s\n" "$(date +%H:%M:%S)" "$imdb_id" | tee -a "$LOG" >&2
+	if ! animemap-api-get "$ANIMEMAP_API_URL/mapping/lookup/imdb/$imdb_id" "$api_file"
+	then
+		printf "%s - Error can't read the entries of imdb : %s stopping script\n" "$(date +%H:%M:%S)" "$imdb_id" | tee -a "$LOG" >&2
+		exit 1
+	fi
+	# only what a plex movies library can hold, so a serie imdb id never matches a movie
+	jq -c --arg imdb_id "$imdb_id" '[ .entries[]
+		| select( .anilist_id != null )
+		| select( .format == "MOVIE" or .tmdb.media_type == "movie" )
+		| { imdb_id: $imdb_id,
+			anidb_id: ( ( .anidb.id // "" ) | tostring ),
+			mal_id: ( ( .mal.id // "" ) | tostring ),
+			anilist_id: ( .anilist_id | tostring ) } ]' "$api_file" > "$imdb_map_file"
+	rm -f "$api_file"
+	printf "%s\t\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG" >&2
+}
+function get-anilist-userlist {															# the one call left to the anilist API, AnimeMap serves no per user list
 	if [[ $ANILIST_LISTS == "Yes" ]]
 	then
 		printf "%s - Creating Anilist userlist for : %s\n" "$(date +%H:%M:%S)" "$ANILIST_USERNAME" | tee -a "$LOG"
@@ -112,123 +163,136 @@ function get-anilist-userlist {
 function get-anilist-id () {
 	if [[ $media_type == "animes" ]]
 	then
-		jq --arg tvdb_id "$tvdb_id" '.[] | select( .tvdb_id == $tvdb_id ) | select( .tvdb_season == "1" or .tvdb_season == "-1" ) | select( .tvdb_epoffset == "0" ) | .anilist_id' -r "$SCRIPT_FOLDER/config/tmp/list-animes-id.json" | head -n 1
+		get-animemap-tvdb-lookup
+		jq '.[] | select( .tvdb_season == "1" or .tvdb_season == "-1" ) | select( .tvdb_epoffset == "0" ) | .anilist_id' -r "$tvdb_map_file" | head -n 1
 	else
-		jq --arg imdb_id "$imdb_id" '.[] | select( .imdb_id == $imdb_id ) | .anilist_id' -r "$SCRIPT_FOLDER/config/tmp/list-movies-id.json" | head -n 1
+		get-animemap-imdb-lookup
+		jq '.[0].anilist_id // empty' -r "$imdb_map_file"
 	fi
 }
 function get-mal-id () {
-	mal_id=$(jq '.data.Media.idMal' -r "$SCRIPT_FOLDER/config/data/anilist-$anilist_id.json")
-	if [[ $mal_id == 'null' ]] || [[ -z $mal_id ]]
+	get-animemap-infos
+	mal_id=$(jq '.mal_id' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json")
+}
+function animemap-empty-record () {														# a full record with every field null, so a getter reading it never trips on a missing key
+	jq -n -c --arg anilist_id "$1" '{ anilist_id: ( $anilist_id | if . == "" then null else tonumber? end ),
+		title_romaji: null,
+		title_english: null,
+		title_native: null,
+		format: null,
+		episodes: null,
+		season_year: null,
+		season: null,
+		status: null,
+		average_score: null,
+		genres: [],
+		tags: null,
+		studios: [],
+		cover_image: null,
+		mal_id: null,
+		tvdb_id: null,
+		tvdb_season: null,
+		tvdb_epoffset: null,
+		crunchyroll_awards: [] }'
+}
+function get-animemap-infos () {														# cache the catalog entry of $anilist_id at config/data/animemap-$anilist_id.json
+	local data_file="$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json"
+	local api_file="$SCRIPT_FOLDER/config/tmp/animemap-mapping.json"
+	local api_status=0
+	if [[ -z $anilist_id ]] || [[ $anilist_id == "null" ]]
 	then
-		if [[ $media_type == "animes" ]]
-		then
-			mal_id=$(jq --arg anilist_id "$anilist_id" '.[] | select( .anilist_id == $anilist_id ) | .mal_id' -r "$SCRIPT_FOLDER/config/tmp/list-animes-id.json" | head -n 1)
-		else
-			mal_id=$(jq --arg anilist_id "$anilist_id" '.[] | select( .anilist_id == $anilist_id ) | .mal_id' -r "$SCRIPT_FOLDER/config/tmp/list-movies-id.json" | head -n 1)
-		fi
+		animemap-empty-record "" > "$data_file"
+		return 1
 	fi
-}
-function get-tvdb-id () {
-	jq --arg anilist_id "$anilist_id" '.[] | select( .anilist_id == $anilist_id ) | .tvdb_id' -r "$SCRIPT_FOLDER/config/tmp/list-animes-id.json"
-}
-function get-anilist-infos () {
-	if [ ! -f "$SCRIPT_FOLDER/config/data/anilist-$anilist_id.json" ]
+	if [ -f "$data_file" ]
 	then
-		wait_time=0
-		anilist_api_retry=0
-		while [ $wait_time -lt 5 ] || [ $anilist_api_retry -lt 5 ];
-		do
-			if [[ "$airing_loop" == 1 ]]
-			then
-				printf "%s\t\t\t - Downloading airing info for Anilist : %s\n" "$(date +%H:%M:%S)" "$anilist_id" | tee -a "$LOG"
-			elif [[ $cours_count_total -gt 1 ]]
-			then
-				printf "%s\t\t - Downloading data for S%s part-%s Anilist : %s\n" "$(date +%H:%M:%S)" "$season_number" "$cours_count" "$anilist_id" | tee -a "$LOG"
-			elif [[ "$season_loop" == 1 ]]
-			then
-				printf "%s\t\t - Downloading data for S%s anilist : %s\n" "$(date +%H:%M:%S)" "$season_number" "$anilist_id" | tee -a "$LOG"
-			else
-				printf "%s\t\t - Downloading data for anilist : %s\n" "$(date +%H:%M:%S)" "$anilist_id" | tee -a "$LOG"
-			fi
-			curl -s 'https://graphql.anilist.co/' \
-			-X POST \
-			-H 'content-type: application/json' \
-			--data '{ "query": "{ Media(type: ANIME, id: '"$anilist_id"') { relations { edges { relationType node { id type format title { romaji } status } } } title { romaji(stylised: false) english(stylised: false) native(stylised: false) } averageScore genres tags { name rank } studios { edges { node { name isAnimationStudio } } } startDate { year month } season seasonYear coverImage { extraLarge } status idMal} }" }' > "$SCRIPT_FOLDER/config/data/anilist-$anilist_id.json" -D "$SCRIPT_FOLDER/config/tmp/anilist-limit-rate.txt"
-			if grep -q -w '"data": null' "$SCRIPT_FOLDER/config/data/anilist-$anilist_id.json"
-			then
-				((anilist_api_retry++))
-				rm "$SCRIPT_FOLDER/config/data/anilist-$anilist_id.json"
-				printf "%s - Invalid json from AniList API down, waiting 60s\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-				sleep 61
-			fi
-			rate_limit=0
-			rate_limit=$(grep -oP '(?<=x-ratelimit-remaining: )[0-9]+' "$SCRIPT_FOLDER/config/tmp/anilist-limit-rate.txt")
-			((wait_time++))
-			if [[ $wait_time == 4 ]] || [[ $anilist_api_retry == 4 ]]
-			then
-				printf "%s - Error can't download anilist data stopping script\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-				exit 1
-			elif [[ -z $rate_limit ]]
-			then
-				printf "%s\t\t - Cloudflare limit rate reached watiting 60s\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-				sleep 61
-			elif [[ $rate_limit -ge 3 ]]
-			then
-				sleep 1
-				if [[ "$airing_loop" == 1 ]]
-				then
-					printf "%s\t\t\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-				else
-					printf "%s\t\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-				fi
-				break
-			elif [[ $rate_limit -lt 3 ]]
-			then
-				printf "%s\t\t - Anilist API limit reached watiting 30s" "$(date +%H:%M:%S)" | tee -a "$LOG"
-				sleep 30
-				if [[ "$airing_loop" == 1 ]]
-				then
-					printf "%s\t\t\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-				else
-					printf "%s\t\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-				fi
-				break
-			fi
-		done
+		return 0
 	fi
+	if [[ $cours_count_total -gt 1 ]]
+	then
+		printf "%s\t\t - Downloading data for S%s part-%s animemap : %s\n" "$(date +%H:%M:%S)" "$season_number" "$cours_count" "$anilist_id" | tee -a "$LOG" >&2
+	elif [[ "$season_loop" == 1 ]]
+	then
+		printf "%s\t\t - Downloading data for S%s animemap : %s\n" "$(date +%H:%M:%S)" "$season_number" "$anilist_id" | tee -a "$LOG" >&2
+	else
+		printf "%s\t\t - Downloading data for animemap : %s\n" "$(date +%H:%M:%S)" "$anilist_id" | tee -a "$LOG" >&2
+	fi
+	animemap-api-get "$ANIMEMAP_API_URL/mapping/anilist/$anilist_id?include_spoilers=true" "$api_file"
+	api_status=$?
+	if [[ $api_status == 1 ]]
+	then
+		printf "%s - Error can't download animemap data stopping script\n" "$(date +%H:%M:%S)" | tee -a "$LOG" >&2
+		exit 1
+	fi
+	if [[ $api_status == 2 ]]
+	then																				# nothing carries that id, keep an empty record so the run carries on
+		printf "%s\t\t - Unknown Anilist id on AnimeMap : %s / %s\n" "$(date +%H:%M:%S)" "$anilist_id" "$plex_title" | tee -a "$LOG" >&2
+		printf "%s - Unknown Anilist id on AnimeMap : %s / %s\n" "$(date +%H:%M:%S)" "$anilist_id" "$plex_title" >> "$MATCH_LOG"
+		animemap-empty-record "$anilist_id" > "$data_file"
+		return 0
+	fi
+	# a studio name comes back as an object here and as a string elsewhere, so both are reduced to the name
+	jq -c '.mapping | { anilist_id: .anilist.anilist_id,
+		title_romaji: .anilist.title_romaji,
+		title_english: .anilist.title_english,
+		title_native: .anilist.title_native,
+		format: .anilist.format,
+		episodes: .anilist.episodes,
+		season_year: .anilist.season_year,
+		season: .anilist.season,
+		status: .anilist.status,
+		average_score: .anilist.average_score,
+		genres: ( .anilist.genres // [] ),
+		tags: [ .anilist.tags[]? | { name, rank } ],
+		studios: [ .anilist.studios[]? | if type == "object" then .name else . end ],
+		cover_image: .anilist.cover_image,
+		mal_id: .mal.id,
+		tvdb_id: .tvdb.id,
+		tvdb_season: ( if ( .tvdb.season | type ) == "number" then ( .tvdb.season | tostring ) else "-1" end ),
+		tvdb_epoffset: ( ( .tvdb.episode_offset // 0 ) | tostring ),
+		crunchyroll_awards: ( .crunchyroll_awards // [] ) }' "$api_file" > "$data_file"
+	rm -f "$api_file"
+	printf "%s\t\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG" >&2
 }
-function get-mal-infos () {
+function get-mal-infos () {																# the MyAnimeList data AnimeMap serves alongside a mapping, a raw jikan data object
 	mal_id=""
 	get-mal-id
 	if [[ $mal_id == 'null' ]] || [[ -z $mal_id ]]
 	then
-		printf "%s\t\t - Missing MAL ID for Anilist : %s / %s\n" "$(date +%H:%M:%S)" "$anilist_id" "$plex_title" | tee -a "$LOG"
+		printf "%s\t\t - Missing MAL ID for Anilist : %s / %s\n" "$(date +%H:%M:%S)" "$anilist_id" "$plex_title" | tee -a "$LOG" >&2
 		printf "%s - Missing MAL ID for Anilist : %s / %s\n" "$(date +%H:%M:%S)" "$anilist_id" "$plex_title" >> "$MATCH_LOG"
-	else
-		if [ ! -f "$SCRIPT_FOLDER/config/data/MAL-$mal_id.json" ]
-		then
-			if [[ $cours_count_total -gt 1 ]]
-			then
-				printf "%s\t\t - Downloading data for S%s part-%s MAL : %s\n" "$(date +%H:%M:%S)" "$season_number" "$cours_count" "$mal_id" | tee -a "$LOG"
-			elif [[ "$season_loop" == 1 ]]
-			then
-				printf "%s\t\t - Downloading data for S%s MAL : %s\n" "$(date +%H:%M:%S)" "$season_number" "$mal_id" | tee -a "$LOG"
-			else
-				printf "%s\t\t - Downloading data for MAL : %s\n" "$(date +%H:%M:%S)" "$mal_id" | tee -a "$LOG"
-			fi
-			curl -s -o "$SCRIPT_FOLDER/config/data/MAL-$mal_id.json" -w "%{http_code}" "https://malapi.animemap.dev/v4/anime/$mal_id" > "$SCRIPT_FOLDER/config/tmp/jikan-limit-rate.txt"
-			if grep -q -w "429" "$SCRIPT_FOLDER/config/tmp/jikan-limit-rate.txt"
-			then
-				printf "%s - Jikan API limit reached watiting 30s" "$(date +%H:%M:%S)" | tee -a "$LOG"
-				sleep 30
-				curl -s -o "$SCRIPT_FOLDER/config/data/MAL-$mal_id.json" -w "%{http_code}" "https://malapi.animemap.dev/v4/anime/$mal_id" > "$SCRIPT_FOLDER/config/tmp/jikan-limit-rate.txt"
-				printf "%s\t\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-			fi
-			sleep 1.1
-				printf "%s\t\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-		fi
+		return 0
 	fi
+	local mal_file="$SCRIPT_FOLDER/config/data/animemap-mal-$mal_id.json"
+	local api_file="$SCRIPT_FOLDER/config/tmp/animemap-mal-mapping.json"
+	if [ -f "$mal_file" ]
+	then
+		return 0
+	fi
+	if [[ $cours_count_total -gt 1 ]]
+	then
+		printf "%s\t\t - Downloading data for S%s part-%s MAL : %s\n" "$(date +%H:%M:%S)" "$season_number" "$cours_count" "$mal_id" | tee -a "$LOG" >&2
+	elif [[ "$season_loop" == 1 ]]
+	then
+		printf "%s\t\t - Downloading data for S%s MAL : %s\n" "$(date +%H:%M:%S)" "$season_number" "$mal_id" | tee -a "$LOG" >&2
+	else
+		printf "%s\t\t - Downloading data for MAL : %s\n" "$(date +%H:%M:%S)" "$mal_id" | tee -a "$LOG" >&2
+	fi
+	if ! animemap-api-get "$ANIMEMAP_API_URL/mapping/anilist/$anilist_id?include_spoilers=true" "$api_file"
+	then
+		printf "%s\t\t - Can't download MAL data for : %s skipping\n" "$(date +%H:%M:%S)" "$mal_id" | tee -a "$LOG" >&2
+		return 0
+	fi
+	if jq -e '.mapping.mal.data == null' "$api_file" > /dev/null					# a miss is never cached, MAL is an upstream AnimeMap calls live
+	then
+		printf "%s\t\t - No MAL data returned for : %s / %s\n" "$(date +%H:%M:%S)" "$mal_id" "$(jq -r '( .warnings // [] ) | join(" ")' "$api_file")" | tee -a "$LOG" >&2
+		printf "%s - No MAL data returned for : %s / %s\n" "$(date +%H:%M:%S)" "$mal_id" "$plex_title" >> "$MATCH_LOG"
+		rm -f "$api_file"
+		return 0
+	fi
+	jq -c '{ data: .mapping.mal.data }' "$api_file" > "$mal_file"
+	rm -f "$api_file"
+	printf "%s\t\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG" >&2
 }
 function get-romaji-title () {
 	title="null"
@@ -239,7 +303,7 @@ function get-romaji-title () {
 		title_tmp=$(sed -n "${line}p" "$SCRIPT_FOLDER/config/$OVERRIDE" | awk -F"\t" '{print $3}')
 		if [[ -z "$title_tmp" ]]
 		then
-			title=$(jq '.data.Media.title.romaji' -r "$SCRIPT_FOLDER/config/data/anilist-$anilist_id.json")
+			title=$(jq '.title_romaji' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json")
 			less-caps-title
 			echo "$title"
 		else
@@ -248,7 +312,7 @@ function get-romaji-title () {
 			echo "$title"
 		fi
 	else
-		title=$(jq '.data.Media.title.romaji' -r "$SCRIPT_FOLDER/config/data/anilist-$anilist_id.json")
+		title=$(jq '.title_romaji' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json")
 		less-caps-title
 		echo "$title"
 	fi
@@ -262,7 +326,7 @@ function get-english-title () {
 		title_tmp=$(sed -n "${line}p" "$SCRIPT_FOLDER/config/$OVERRIDE" | awk -F"\t" '{print $3}')
 		if [[ -z "$title_tmp" ]]
 		then
-			title=$(jq '.data.Media.title.english' -r "$SCRIPT_FOLDER/config/data/anilist-$anilist_id.json")
+			title=$(jq '.title_english' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json")
 			less-caps-title
 			echo "$title"
 		else
@@ -271,13 +335,13 @@ function get-english-title () {
 			echo "$title"
 		fi
 	else
-		title=$(jq '.data.Media.title.english' -r "$SCRIPT_FOLDER/config/data/anilist-$anilist_id.json")
+		title=$(jq '.title_english' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json")
 		less-caps-title
 		echo "$title"
 	fi
 }
 function get-native-title () {
-	title=$(jq '.data.Media.title.native' -r "$SCRIPT_FOLDER/config/data/anilist-$anilist_id.json")
+	title=$(jq '.title_native' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json")
 	echo "$title"
 }
 function less-caps-title () {
@@ -292,316 +356,305 @@ function less-caps-title () {
 }
 function get-score () {
 	anime_score=0
-	anime_score=$(jq '.data.Media.averageScore' -r "$SCRIPT_FOLDER/config/data/anilist-$anilist_id.json")
+	get-animemap-infos
+	anime_score=$(jq '.average_score' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json")
 	if [[ "$anime_score" == "null" ]] || [[ "$anime_score" == "" ]]
 	then
-		rm "$SCRIPT_FOLDER/config/data/anilist-$anilist_id.json"
-		get-anilist-infos
-		anime_score=$(jq '.data.Media.averageScore' -r "$SCRIPT_FOLDER/config/data/anilist-$anilist_id.json")
-		if [[ "$anime_score" == "null" ]] || [[ "$anime_score" == "" ]]
-		then
-			anime_score=0
-		else
-			anime_score=$(printf %s "$anime_score" | awk '{print $1 / 10}')
-		fi
+		anime_score=0
 	else
 		anime_score=$(printf %s "$anime_score" | awk '{print $1 / 10}')
 	fi
 }
 function get-mal-score () {
-mal_id=""
-get-mal-id
-if [[ $mal_id == 'null' ]] || [[ -z $mal_id ]]
-then
-	printf "%s\t\t - Missing MAL ID for Anilist : %s / %s\n" "$(date +%H:%M:%S)" "$anilist_id" "$plex_title" | tee -a "$LOG"
-	printf "%s - Missing MAL ID for Anilist : %s / %s\n" "$(date +%H:%M:%S)" "$anilist_id" "$plex_title" >> "$MATCH_LOG"
-else
 	anime_score=0
-	get-mal-infos
-	anime_score=$(jq '.data.score' -r "$SCRIPT_FOLDER/config/data/MAL-$mal_id.json")
-	if [[ "$anime_score" == "null" ]] || [[ "$anime_score" == "" ]]
-	then
-		rm "$SCRIPT_FOLDER/config/data/MAL-$mal_id.json"
-		get-mal-infos
-		anime_score=$(jq '.data.score' -r "$SCRIPT_FOLDER/config/data/MAL-$mal_id.json")
-		if [[ "$anime_score" == "null" ]] || [[ "$anime_score" == "" ]]
-		then
-			anime_score=0
-		fi
-	fi
-fi
-}
-function get-anilist-tags () {
-	anime_tags=$( (jq '.data.Media.genres | .[]' -r "$SCRIPT_FOLDER/config/data/anilist-$anilist_id.json" && jq --argjson anilist_tags_p "$ANILIST_TAGS_P" '.data.Media.tags | .[] | select( .rank >= $anilist_tags_p ) | .name' -r "$SCRIPT_FOLDER/config/data/anilist-$anilist_id.json") | awk '{print $0}' | paste -sd ',')
-}
-function get-mal-tags () {
 	mal_id=""
 	get-mal-id
 	if [[ $mal_id == 'null' ]] || [[ -z $mal_id ]]
 	then
 		printf "%s\t\t - Missing MAL ID for Anilist : %s / %s\n" "$(date +%H:%M:%S)" "$anilist_id" "$plex_title" | tee -a "$LOG"
 		printf "%s - Missing MAL ID for Anilist : %s / %s\n" "$(date +%H:%M:%S)" "$anilist_id" "$plex_title" >> "$MATCH_LOG"
-	else
-		get-mal-infos
-		anime_tags=$( (jq '.data.genres  | .[] | .name' -r "$SCRIPT_FOLDER/config/data/MAL-$mal_id.json" && jq '.data.demographics  | .[] | .name' -r "$SCRIPT_FOLDER/config/data/MAL-$mal_id.json" && jq '.data.themes  | .[] | .name' -r "$SCRIPT_FOLDER/config/data/MAL-$mal_id.json") | awk '{print $0}' | paste -sd ',')
+		return 0
 	fi
+	get-mal-infos
+	if [ -f "$SCRIPT_FOLDER/config/data/animemap-mal-$mal_id.json" ]
+	then
+		anime_score=$(jq '.data.score' -r "$SCRIPT_FOLDER/config/data/animemap-mal-$mal_id.json")
+	fi
+	if [[ "$anime_score" == "null" ]] || [[ "$anime_score" == "" ]]
+	then
+		anime_score=0
+	fi
+}
+function get-animemap-tags () {															# the anilist genres, plus the tags ranked at or above ANILIST_TAGS_P
+	get-animemap-infos
+	anime_tags=$( (jq '.genres | .[]' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json" && jq --argjson anilist_tags_p "$ANILIST_TAGS_P" '.tags // [] | .[] | select( .rank >= $anilist_tags_p ) | .name' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json") | awk '{print $0}' | paste -sd ',')
+}
+function get-mal-tags () {
+	anime_tags=""
+	mal_id=""
+	get-mal-id
+	if [[ $mal_id == 'null' ]] || [[ -z $mal_id ]]
+	then
+		printf "%s\t\t - Missing MAL ID for Anilist : %s / %s\n" "$(date +%H:%M:%S)" "$anilist_id" "$plex_title" | tee -a "$LOG"
+		printf "%s - Missing MAL ID for Anilist : %s / %s\n" "$(date +%H:%M:%S)" "$anilist_id" "$plex_title" >> "$MATCH_LOG"
+		return 0
+	fi
+	get-mal-infos
+	if [ ! -f "$SCRIPT_FOLDER/config/data/animemap-mal-$mal_id.json" ]
+	then
+		return 0
+	fi
+	anime_tags=$( (jq '.data.genres | .[]? | .name' -r "$SCRIPT_FOLDER/config/data/animemap-mal-$mal_id.json" && jq '.data.demographics | .[]? | .name' -r "$SCRIPT_FOLDER/config/data/animemap-mal-$mal_id.json" && jq '.data.themes | .[]? | .name' -r "$SCRIPT_FOLDER/config/data/animemap-mal-$mal_id.json") | awk '{print $0}' | paste -sd ',')
 }
 function get-studios() {
 	if awk -F"\t" '{print $2}' "$SCRIPT_FOLDER/config/$OVERRIDE" | grep -q -w "$anilist_id"
 	then
 		line=$(awk -F"\t" '{print $2}' "$SCRIPT_FOLDER/config/$OVERRIDE" | grep -w -n "$anilist_id" | cut -d : -f 1)
 		studio=$(sed -n "${line}p" "$SCRIPT_FOLDER/config/$OVERRIDE" | awk -F"\t" '{print $4}')
-		if [[ -z "$studio" ]]
+		if [[ -n "$studio" ]]
 		then
-			studio=$(jq '.data.Media.studios.edges[].node | select( .isAnimationStudio == true ) | .name' -r "$SCRIPT_FOLDER/config/data/anilist-$anilist_id.json" | head -n 1)
-			if [[ -z "$studio" ]]
-			then
-				studio=$(jq '.data.Media.studios.edges[].node | .name' -r "$SCRIPT_FOLDER/config/data/anilist-$anilist_id.json" | head -n 1)
-			fi
+			return 0
 		fi
-	else
-		studio=$(jq '.data.Media.studios.edges[].node | select( .isAnimationStudio == true ) | .name' -r "$SCRIPT_FOLDER/config/data/anilist-$anilist_id.json" | head -n 1)
-		if [[ -z "$studio" ]]
-		then
-			studio=$(jq '.data.Media.studios.edges[].node | .name' -r "$SCRIPT_FOLDER/config/data/anilist-$anilist_id.json" | head -n 1)
-		fi
+	fi
+	get-animemap-infos
+	studio=$(jq '.studios | .[0] // empty' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json")
+	if [[ -n "$studio" ]]
+	then
+		return 0
+	fi
+	get-mal-infos																		# anilist does not name a studio for every entry, MAL usually does
+	if [ -f "$SCRIPT_FOLDER/config/data/animemap-mal-$mal_id.json" ]
+	then
+		studio=$(jq '.data.studios | .[0].name // empty' -r "$SCRIPT_FOLDER/config/data/animemap-mal-$mal_id.json")
 	fi
 }
 function get-animes-season-year () {
-	anime_season=$( (jq '.data.Media.seasonYear' -r "$SCRIPT_FOLDER/config/data/anilist-$anilist_id.json" && jq '.data.Media.season' -r "$SCRIPT_FOLDER/config/data/anilist-$anilist_id.json") | paste -sd ' ' | tr '[:upper:]' '[:lower:]' | sed "s/\( \|^\)\(.\)/\1\u\2/g")
-	if [ "$anime_season" == "Null Null" ]
-		then
-		year_season=$(jq '.data.Media.startDate.year' -r "$SCRIPT_FOLDER/config/data/anilist-$anilist_id.json")
-		month_season=$(jq '.data.Media.startDate.month' -r "$SCRIPT_FOLDER/config/data/anilist-$anilist_id.json")
-		if [[ $month_season -le 3 ]]
-		then
-			name_season=Winter
-		elif [[ $month_season -ge 4 && $month_season -le 6 ]]
-		then
-			name_season=Spring
-		elif [[ $month_season -ge 7 && $month_season -le 9 ]]
-		then
-			name_season=Summer
-		elif [[ $month_season -ge 10 ]]
-		then
-			name_season=Fall
-		fi
-		anime_season=$(printf "%s %s" "$year_season" "$name_season")
+	anime_season=""
+	get-animemap-infos
+	year_season=$(jq '.season_year // empty' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json")
+	name_season=$(jq '.season // empty' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json")
+	if [[ -n "$year_season" ]] && [[ -n "$name_season" ]]
+	then
+		anime_season=$(printf "%s %s" "$year_season" "$name_season" | tr '[:upper:]' '[:lower:]' | sed "s/\( \|^\)\(.\)/\1\u\2/g")
 	fi
 }
 function get-animes-award () {
 	award_check=""
 	cr_awards=""
+	get-animemap-infos
 	if [[ $ANIME_AWARDS_NO_FVA == "Yes" ]]
 	then
-		award_check=$(jq --arg anilist_id "$anilist_id" '.[] | select( .anilist_id == $anilist_id ) | select(.cr_award | contains("English") or contains("Arabic") or contains("Spanish") or contains("Castilian") or contains("French")or contains("German") or contains("Italian") or contains("Portuguese") or contains("Russian")  | not) | "AA " + .year + " " + .cr_award' -r "$SCRIPT_FOLDER/config/tmp/cr-award.json" | paste -s -d, -)  > /dev/null
+		award_check=$(jq '.crunchyroll_awards[]? | select(.award | contains("English") or contains("Arabic") or contains("Spanish") or contains("Castilian") or contains("French")or contains("German") or contains("Italian") or contains("Portuguese") or contains("Russian")  | not) | "AA " + ( .year | tostring ) + " " + .award' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json" | paste -s -d, -)  > /dev/null
 		if [[ -n $award_check ]]
 		then
 			cr_awards=$award_check
 		fi
 	else
-		award_check=$(jq --arg anilist_id "$anilist_id" '.[] | select( .anilist_id == $anilist_id ) | "AA " + .year + " " + .cr_award' -r "$SCRIPT_FOLDER/config/tmp/cr-award.json" | paste -s -d, -)  > /dev/null
+		award_check=$(jq '.crunchyroll_awards[]? | "AA " + ( .year | tostring ) + " " + .award' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json" | paste -s -d, -)  > /dev/null
 		if [[ -n $award_check ]]
 		then
 			cr_awards=$award_check
 		fi
 	fi
 }
-function get-airing-status () {
-	if jq '.data.Media.status' -r "$SCRIPT_FOLDER/config/data/anilist-$anilist_id.json" | grep -q -w "NOT_YET_RELEASED"
+function entry-is-a-return () {															# a movie, an OVA or a one off special is not the serie coming back, a season in any serie format is
+	case $(jq '.format // "null"' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json") in
+		TV|TV_SHORT|ONA|null)	return 0 ;;
+		*)						return 1 ;;
+	esac
+}
+function get-announced-sequel () {														# a just announced season usually has no tvdb id yet, so the tvdb entries cannot find it
+	local api_file="$SCRIPT_FOLDER/config/tmp/animemap-search.json"
+	local search_file="$SCRIPT_FOLDER/config/data/animemap-search-$anilist_id.json"
+	local search_title=""
+	local query=""
+	local candidate=""
+	announced_sequel="no"
+	search_title=$(jq '.title_romaji // empty' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json")
+	if [[ -z $search_title ]]
+	then
+		return 0
+	fi
+	if [ ! -f "$search_file" ]
+	then
+		query=$(jq -rn --arg title "$search_title" '$title | @uri')
+		printf "%s\t\t - Looking for an announced sequel of : %s\n" "$(date +%H:%M:%S)" "$search_title" | tee -a "$LOG" >&2
+		if ! animemap-api-get "$ANIMEMAP_API_URL/search?q=$query&limit=25" "$api_file"
+		then
+			printf "%s\t\t - Can't search for : %s skipping\n" "$(date +%H:%M:%S)" "$search_title" | tee -a "$LOG" >&2
+			return 0
+		fi
+		# nothing unreleased is dated before the current year, so this drops the back catalogue without dropping a candidate
+		jq -c --argjson year "$(date +%Y)" '[ .anilist[]? | select( .mapping.season_year == null or .mapping.season_year >= $year ) | .id ]' "$api_file" > "$search_file"
+		rm -f "$api_file"
+	fi
+	local anilist_backup_id=$anilist_id
+	for candidate in $(jq '.[]' -r "$search_file")
+	do
+		anilist_id=$candidate
+		get-animemap-infos
+		if ! entry-is-a-return
+		then
+			continue
+		fi
+		case $(jq '.status // empty' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json") in
+			RELEASING)			announced_sequel="airing"; break ;;
+			NOT_YET_RELEASED)	announced_sequel="planned" ;;
+		esac
+	done
+	anilist_id=$anilist_backup_id
+}
+function get-airing-status () {															# AnimeMap carries no anilist relation, so the entries of the tvdb serie stand in for the sequel chain
+	local IFS=$' \t\n'																		# get-season-infos splits on commas, the ids read below are one per line
+	local anilist_backup_id=$anilist_id
+	local sequel_ids=""
+	local sequel_id=""
+	local entry_status=""
+	airing_status="Ended"
+	get-animemap-infos
+	entry_status=$(jq '.status // empty' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json")
+	if [[ $entry_status == "RELEASING" ]]
+	then
+		airing_status="Airing"
+		return 0
+	fi
+	if [[ $entry_status == "NOT_YET_RELEASED" ]]
 	then
 		airing_status="Planned"
-	else
-		airing_loop=0
-		anilist_backup_id=$anilist_id
-		airing_status="Ended"
-		last_sequel_found=0
-		sequel_multi_check=0
-		while [ $last_sequel_found -lt 50 ];
-		do
-			airing_loop=1
-			if [[ $sequel_multi_check -gt 0 ]]
-			then
-				anilist_multi_id_backup=$anilist_id
-				:> "$SCRIPT_FOLDER/config/tmp/airing_sequel_tmp.json"
-				while IFS=$'\n' read -r anilist_id
-				do
-					get-anilist-infos
-					cat "$SCRIPT_FOLDER/config/data/anilist-$anilist_id.json" >> "$SCRIPT_FOLDER/config/tmp/airing_sequel_tmp.json"
-				done < "$SCRIPT_FOLDER/config/tmp/airing_sequel_tmp.txt"
-				anilist_id=$anilist_multi_id_backup
-				sequel_data=$(jq '.data.Media.relations.edges[] | select ( .relationType == "SEQUEL" ) | .node | select ( .format == "TV" or .format == "ONA" or .format == "MOVIE" or .format == "OVA" or .format == null )' -r "$SCRIPT_FOLDER/config/tmp/airing_sequel_tmp.json")
-				if [ -z "$sequel_data" ]
-				then
-					airing_status="Ended"
-					anilist_id=$anilist_backup_id
-					break
-				else
-					sequel_check=$(printf "%s" "$sequel_data" | jq 'select ( .format == "TV" or .format == "ONA" or .format == "MOVIE" or .format == "OVA" or .format == null )')
-					if echo "$sequel_check" | grep -q -w "NOT_YET_RELEASED"
-					then
-						airing_status="Planned"
-						anilist_id=$anilist_backup_id
-						break
-					else
-						anilist_id=$(printf "%s" "$sequel_data" | jq '.id')
-						sequel_multi_check=$(printf %s "$anilist_id" | wc -l)
-						if [[ $sequel_multi_check -gt 0 ]]
-						then
-							printf "%s" "$anilist_id" > "$SCRIPT_FOLDER/config/tmp/airing_sequel_tmp.txt"
-							anilist_id=$( printf "%s" "$anilist_id" | head -n 1)
-							((last_sequel_found++))
-						else
-							((last_sequel_found++))
-						fi
-					fi
-				fi
-			else
-				get-anilist-infos
-				sequel_data=$(jq '.data.Media.relations.edges[] | select ( .relationType == "SEQUEL" ) | .node | select ( .format == "TV" or .format == "ONA" or .format == "MOVIE" or .format == "OVA" or .format == null )' -r "$SCRIPT_FOLDER/config/data/anilist-$anilist_id.json")
-				if [ -z "$sequel_data" ]
-				then
-					airing_status="Ended"
-					anilist_id=$anilist_backup_id
-					break
-				else
-					sequel_check=$(printf "%s" "$sequel_data" | jq 'select ( .format == "TV" or .format == "ONA" or .format == "MOVIE" or .format == "OVA" or .format == null )')
-					if echo "$sequel_check" | grep -q -w "NOT_YET_RELEASED"
-					then
-						airing_status="Planned"
-						anilist_id=$anilist_backup_id
-						break
-					else
-						anilist_id=$(printf "%s" "$sequel_data" | jq '.id')
-						sequel_multi_check=$(printf %s "$anilist_id" | wc -l)
-						if [[ $sequel_multi_check -gt 0 ]]
-						then
-							printf "%s\n" "$anilist_id" > "$SCRIPT_FOLDER/config/tmp/airing_sequel_tmp.txt"
-							anilist_id=$( printf "%s" "$anilist_id" | head -n 1)
-							((last_sequel_found++))
-						else
-							((last_sequel_found++))
-						fi
-					fi
-				fi
-			fi
-		done
-		airing_loop=0
-		anilist_id=$anilist_backup_id
-		if [[ $last_sequel_found -ge 50 ]]
+	fi
+	if [[ $media_type != "animes" ]] || [[ -z $tvdb_id ]]
+	then
+		return 0
+	fi
+	get-animemap-tvdb-lookup
+	sequel_ids=$(jq '.[].anilist_id' -r "$tvdb_map_file" | sort -n | uniq)
+	for sequel_id in $sequel_ids
+	do
+		anilist_id=$sequel_id
+		get-animemap-infos
+		if ! entry-is-a-return
 		then
-			airing_status="Ended"
+			continue
 		fi
+		entry_status=$(jq '.status // empty' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json")
+		if [[ $entry_status == "RELEASING" ]]											# something of this serie on air outranks something merely announced
+		then
+			airing_status="Airing"
+			break
+		fi
+		if [[ $entry_status == "NOT_YET_RELEASED" ]]
+		then
+			airing_status="Planned"
+		fi
+	done
+	anilist_id=$anilist_backup_id
+	if [[ $airing_status != "Ended" ]]													# only a serie that looks finished is worth the search
+	then
+		return 0
+	fi
+	get-announced-sequel
+	if [[ $announced_sequel == "airing" ]]
+	then
+		airing_status="Airing"
+	elif [[ $announced_sequel == "planned" ]]
+	then
+		airing_status="Planned"
 	fi
 }
-function get-poster () {
-	if [[ $POSTER_DOWNLOAD == "Yes" ]]
+function get-poster-url () {
+	poster_url=""
+	if [[ $POSTER_SOURCE == "MAL" ]]
 	then
-		if [ ! -f "$ASSET_FOLDER/$asset_name/poster.jpg" ]
+		get-mal-infos
+		if [ -f "$SCRIPT_FOLDER/config/data/animemap-mal-$mal_id.json" ]
 		then
-			if [ ! -d "$ASSET_FOLDER/$asset_name" ]
-			then
-				mkdir "$ASSET_FOLDER/$asset_name"
-			fi
-			if [[ $POSTER_SOURCE == "MAL" ]]
-			then
-				get-mal-infos
-				printf "%s\t\t - Downloading poster for MAL : %s\n" "$(date +%H:%M:%S)" "$mal_id" | tee -a "$LOG"
-				poster_url=$(jq '.data.images.jpg.large_image_url' -r "$SCRIPT_FOLDER/config/data/MAL-$mal_id.json")
-				curl -s "$poster_url" -o "$ASSET_FOLDER/$asset_name/poster.jpg"
-				sleep 1.5
-				printf "%s\t\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-			else
-				printf "%s\t\t - Downloading poster for anilist : %s\n" "$(date +%H:%M:%S)" "$anilist_id" | tee -a "$LOG"
-				poster_url=$(jq '.data.Media.coverImage.extraLarge' -r "$SCRIPT_FOLDER/config/data/anilist-$anilist_id.json")
-				curl -s "$poster_url" -o "$ASSET_FOLDER/$asset_name/poster.jpg"
-				sleep 0.5
-				printf "%s\t\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-			fi
-		else
-			postersize=$(du -b "$ASSET_FOLDER/$asset_name/poster.jpg" | awk '{ print $1 }')
-			if [[ $postersize -lt 10000 ]]
-			then
-				rm "$ASSET_FOLDER/$asset_name/poster.jpg"
-				if [ ! -d "$ASSET_FOLDER/$asset_name" ]
-				then
-					mkdir "$ASSET_FOLDER/$asset_name"
-				fi
-				if [[ $POSTER_SOURCE == "MAL" ]]
-				then
-					get-mal-infos
-					printf "%s\t\t - Downloading poster for MAL : %s\n" "$(date +%H:%M:%S)" "$mal_id" | tee -a "$LOG"
-					poster_url=$(jq '.data.images.jpg.large_image_url' -r "$SCRIPT_FOLDER/config/data/MAL-$mal_id.json")
-					curl -s "$poster_url" -o "$ASSET_FOLDER/$asset_name/poster.jpg"
-					sleep 1.5
-					printf "%s\t\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-				else
-					printf "%s\t\t - Downloading poster for anilist : %s\n" "$(date +%H:%M:%S)" "$anilist_id" | tee -a "$LOG"
-					poster_url=$(jq '.data.Media.coverImage.extraLarge' -r "$SCRIPT_FOLDER/config/data/anilist-$anilist_id.json")
-					curl -s "$poster_url" -o "$ASSET_FOLDER/$asset_name/poster.jpg"
-					sleep 0.5
-					printf "%s\t\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-				fi
-			fi
+			poster_url=$(jq '.data.images.jpg.large_image_url // empty' -r "$SCRIPT_FOLDER/config/data/animemap-mal-$mal_id.json")
 		fi
+	else
+		get-animemap-infos
+		poster_url=$(jq '.cover_image // empty' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json")
+	fi
+}
+function download-poster () {															# $1 destination file, AnimeMap serves the medium anilist cover, the large one lives at the same path
+	local destination="$1"
+	local large_url=""
+	local poster_size=0
+	get-poster-url
+	if [[ -z "$poster_url" ]]
+	then
+		return 1
+	fi
+	large_url=$(printf %s "$poster_url" | sed 's#/cover/medium/#/cover/large/#')
+	curl -s "$large_url" -o "$destination"
+	poster_size=$(du -b "$destination" | awk '{ print $1 }')
+	if [[ $poster_size -lt 10000 ]] && [[ "$large_url" != "$poster_url" ]]
+	then
+		curl -s "$poster_url" -o "$destination"
+	fi
+	sleep 0.5
+	return 0
+}
+function get-poster () {
+	if [[ $POSTER_DOWNLOAD != "Yes" ]]
+	then
+		return 0
+	fi
+	local poster_file="$ASSET_FOLDER/$asset_name/poster.jpg"
+	if [ -f "$poster_file" ]
+	then
+		postersize=$(du -b "$poster_file" | awk '{ print $1 }')
+		if [[ $postersize -ge 10000 ]]
+		then
+			return 0
+		fi
+		rm -f "$poster_file"
+	fi
+	mkdir -p "$ASSET_FOLDER/$asset_name"
+	if [[ $POSTER_SOURCE == "MAL" ]]
+	then
+		printf "%s\t\t - Downloading poster for MAL : %s\n" "$(date +%H:%M:%S)" "$mal_id" | tee -a "$LOG"
+	else
+		printf "%s\t\t - Downloading poster for animemap : %s\n" "$(date +%H:%M:%S)" "$anilist_id" | tee -a "$LOG"
+	fi
+	if download-poster "$poster_file"
+	then
+		printf "%s\t\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
+	else
+		printf "%s\t\t - No poster found skipping\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
 	fi
 }
 function get-season-poster () {
-	if [[ $POSTER_SEASON_DOWNLOAD == "Yes" ]]
+	if [[ $POSTER_SEASON_DOWNLOAD != "Yes" ]]
 	then
-		if [[ $season_number -lt 10 ]]
+		return 0
+	fi
+	if [[ $season_number -lt 10 ]]
+	then
+		assets_filepath="$ASSET_FOLDER/$asset_name/Season0$season_number.jpg"
+	else
+		assets_filepath="$ASSET_FOLDER/$asset_name/Season$season_number.jpg"
+	fi
+	if [ -f "$assets_filepath" ]
+	then
+		postersize=$(du -b "$assets_filepath" | awk '{ print $1 }')
+		if [[ $postersize -ge 10000 ]]
 		then
-			assets_filepath="$ASSET_FOLDER/$asset_name/Season0$season_number.jpg"
-		else
-			assets_filepath="$ASSET_FOLDER/$asset_name/Season$season_number.jpg"
+			return 0
 		fi
-		if [ ! -f "$assets_filepath" ]
-		then
-			if [ ! -d "$ASSET_FOLDER/$asset_name" ]
-			then
-				mkdir "$ASSET_FOLDER/$asset_name"
-			fi
-			if [[ $POSTER_SOURCE == "MAL" ]]
-			then
-				get-mal-infos
-				printf "%s\t\t - Downloading poster for S%s MAL : %s\n" "$(date +%H:%M:%S)" "$season_number" "$mal_id" | tee -a "$LOG"
-				poster_url=$(jq '.data.images.jpg.large_image_url' -r "$SCRIPT_FOLDER/config/data/MAL-$mal_id.json")
-				curl -s "$poster_url" -o "$assets_filepath"
-				sleep 1.5
-				printf "%s\t\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-			else
-				printf "%s\t\t - Downloading poster for S%s anilist : %s\n" "$(date +%H:%M:%S)" "$season_number" "$anilist_id" | tee -a "$LOG"
-				poster_url=$(jq '.data.Media.coverImage.extraLarge' -r "$SCRIPT_FOLDER/config/data/anilist-$anilist_id.json")
-				curl -s "$poster_url" -o "$assets_filepath"
-				sleep 0.5
-				printf "%s\t\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-			fi
-		else
-			postersize=$(du -b "$assets_filepath" | awk '{ print $1 }')
-			if [[ $postersize -lt 10000 ]]
-			then
-				rm "$assets_filepath"
-				if [ ! -d "$ASSET_FOLDER/$asset_name" ]
-				then
-					mkdir "$ASSET_FOLDER/$asset_name"
-				fi
-				if [[ $POSTER_SOURCE == "MAL" ]]
-				then
-					get-mal-infos
-					printf "%s\t\t - Downloading poster S%s MAL : %s\n" "$(date +%H:%M:%S)" "$season_number" "$mal_id" | tee -a "$LOG"
-					poster_url=$(jq '.data.images.jpg.large_image_url' -r "$SCRIPT_FOLDER/config/data/MAL-$mal_id.json")
-					curl -s "$poster_url" -o "$assets_filepath"
-					sleep 1.5
-					printf "%s\t\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-				else
-					printf "%s\t\t - Downloading poster S%s anilist : %s\n" "$(date +%H:%M:%S)" "$season_number" "$anilist_id" | tee -a "$LOG"
-					poster_url=$(jq '.data.Media.coverImage.extraLarge' -r "$SCRIPT_FOLDER/config/data/anilist-$anilist_id.json")
-					curl -s "$poster_url" -o "$assets_filepath"
-					sleep 0.5
-					printf "%s\t\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-				fi
-			fi
-		fi
+		rm -f "$assets_filepath"
+	fi
+	mkdir -p "$ASSET_FOLDER/$asset_name"
+	if [[ $POSTER_SOURCE == "MAL" ]]
+	then
+		printf "%s\t\t - Downloading poster for S%s MAL : %s\n" "$(date +%H:%M:%S)" "$season_number" "$mal_id" | tee -a "$LOG"
+	else
+		printf "%s\t\t - Downloading poster for S%s animemap : %s\n" "$(date +%H:%M:%S)" "$season_number" "$anilist_id" | tee -a "$LOG"
+	fi
+	if download-poster "$assets_filepath"
+	then
+		printf "%s\t\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
+	else
+		printf "%s\t\t - No poster found skipping\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
 	fi
 }
 function get-rating-1 () {
@@ -795,11 +848,12 @@ function check-rating-2-valid () {
 function get-season-infos () {
 	override_id=""
 	anilist_backup_id=$anilist_id
-	season_check=$(jq --arg anilist_id "$anilist_id" '.[] | select( .anilist_id == $anilist_id ) | .tvdb_season' -r "$SCRIPT_FOLDER/config/tmp/list-animes-id.json")
+	get-animemap-tvdb-lookup
+	season_check=$(jq --arg anilist_id "$anilist_id" '.[] | select( .anilist_id == $anilist_id ) | .tvdb_season' -r "$tvdb_map_file")
 	first_season=$(echo "$seasons_list" | awk -F "," '{print $1}')
 	last_season=$(echo "$seasons_list" | awk -F "," '{print $NF}')
 	total_seasons=$(echo "$seasons_list" | awk -F "," '{print NF}')
-	valid_anilist_id=$(jq --arg tvdb_id "$tvdb_id" '.[] | select( .tvdb_id == $tvdb_id ) | .anilist_id' -r "$SCRIPT_FOLDER/config/tmp/list-animes-id.json")
+	valid_anilist_id=$(jq '.[].anilist_id' -r "$tvdb_map_file")
 	if awk -F"\t" '{print $2}' "$SCRIPT_FOLDER/config/$OVERRIDE" | grep -q -w "$anilist_backup_id" && [[ $last_season -eq 1 ]]
 	then
 		valid_anilist_id=1
@@ -830,7 +884,7 @@ function get-season-infos () {
 				printf "      0:\n        label.remove: Score\n" >> "$METADATA"
 			else
 				season_loop=1
-				anilist_ids=$(jq --arg tvdb_id "$tvdb_id" --arg season_number "$season_number" '[.[] | select( .tvdb_id == $tvdb_id ) | select( .tvdb_season == $season_number )] | sort_by(.tvdb_epoffset) | .[].anilist_id' -r "$SCRIPT_FOLDER/config/tmp/list-animes-id.json" | paste -s -d, -)
+				anilist_ids=$(jq --arg season_number "$season_number" '[.[] | select( .tvdb_season == $season_number )] | sort_by(.tvdb_epoffset) | .[].anilist_id' -r "$tvdb_map_file" | paste -s -d, -)
 				if [ -n "$override_id" ] && [[ $season_number -eq 1 ]]
 				then
 					anilist_ids=$anilist_backup_id
@@ -851,8 +905,8 @@ function get-season-infos () {
 					((cours_count++))
 					if [[ -n "$anilist_id" ]]
 					then
-						get-anilist-infos
-						if jq '.data.Media.status' -r "$SCRIPT_FOLDER/config/data/anilist-$anilist_id.json" | grep -q -w "NOT_YET_RELEASED"
+						get-animemap-infos
+						if jq '.status' -r "$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json" | grep -q -w "NOT_YET_RELEASED"
 						then
 							((score_1_no_rating_cours++))
 							((score_2_no_rating_cours++))
@@ -932,12 +986,12 @@ function get-season-infos () {
 							((score_2_no_rating_seasons++))
 						fi
 					else
-						score_1_season=0
-						((score_1_no_rating_seasons++))
+						score_2_season=0
+						((score_2_no_rating_seasons++))
 					fi
 				fi
 				cours_count_total=0
-				anilist_id=$(jq --arg tvdb_id "$tvdb_id" --arg season_number "$season_number" '.[] | select( .tvdb_id == $tvdb_id ) | select( .tvdb_season == $season_number ) | select( .tvdb_epoffset == "0" ) | .anilist_id' -r "$SCRIPT_FOLDER/config/tmp/list-animes-id.json" | head -n 1)
+				anilist_id=$(jq --arg season_number "$season_number" '.[] | select( .tvdb_season == $season_number ) | select( .tvdb_epoffset == "0" ) | .anilist_id' -r "$tvdb_map_file" | head -n 1)
 				if [ -n "$override_id" ] && [[ $season_number -eq 1 ]]
 				then
 					anilist_id=$anilist_backup_id 
@@ -1158,7 +1212,7 @@ function get-season-infos () {
 	anilist_id=$anilist_backup_id
 }
 function write-metadata () {
-	get-anilist-infos
+	get-animemap-infos
 	if [[ $media_type == "animes" ]]
 	then
 		printf "  %s:\n" "$tvdb_id" >> "$METADATA"
@@ -1208,7 +1262,7 @@ function write-metadata () {
 		then
 			get-mal-tags
 		else
-			get-anilist-tags
+			get-animemap-tags
 		fi
 		if [[ "$ADD_ANIME_TAG" == "No" ]]
 		then
@@ -1243,24 +1297,20 @@ function write-metadata () {
 	if [[ $media_type == "animes" ]]
 	then
 		printf "%s\t\t - Writing airing status\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-		if awk -F"\t" '{print "\""$1"\":"}' "$SCRIPT_FOLDER/config/data/ongoing.tsv" | grep -q -w "$tvdb_id"
+		get-airing-status
+		if [[ $airing_status == Airing ]]
 		then
 			label_add="Airing"
 			label_remove="Planned,Ended"
-			printf "%s\t\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
+		elif [[ $airing_status == Planned ]]
+		then
+			label_add="Planned"
+			label_remove="Airing,Ended"
 		else
-			get-airing-status
-			if [[ $airing_status == Planned ]]
-			then
-				label_add="Planned"
-				label_remove="Airing,Ended"
-				printf "%s\t\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-			else
-				label_add="Ended"
-				label_remove="Planned,Airing"
-				printf "%s\t\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-			fi
+			label_add="Ended"
+			label_remove="Planned,Airing"
 		fi
+		printf "%s\t\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
 	fi
 	if [[ -n $cr_awards ]]
 	then
@@ -1291,7 +1341,8 @@ function write-metadata () {
 		do
 			if [[ $media_type == "animes" ]]
 			then
-				all_anilist_ids=$(jq --arg tvdb_id "$tvdb_id" '.[] | select( .tvdb_id == $tvdb_id ) | .anilist_id' -r "$SCRIPT_FOLDER/config/tmp/list-animes-id.json" | paste -s -d, - | sed 's/,/\\|/g')
+				get-animemap-tvdb-lookup
+				all_anilist_ids=$(jq '.[].anilist_id' -r "$tvdb_map_file" | paste -s -d, - | sed 's/,/\\|/g')
 			else
 				all_anilist_ids=$anilist_id
 			fi

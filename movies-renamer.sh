@@ -31,8 +31,7 @@ fi
 :> "$MATCH_LOG"
 printf "%s - Starting movies script\n\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
 
-# Download animes mapping json data & anilist userlist
-download-anime-id-mapping
+# Download the anilist userlist
 get-anilist-userlist
 
 # export movies list from plex
@@ -96,7 +95,7 @@ done < "$SCRIPT_FOLDER/config/tmp/plex_movies_export.tsv"
 printf "%s\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
 printf "%s - Done\n\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
 
-# write PMM metadata file from ID/movies.tsv and jikan API
+# write PMM metadata file from ID/movies.tsv and the AnimeMap API
 printf "%s - Start writing the metadata file \n" "$(date +%H:%M:%S)" | tee -a "$LOG"
 printf "# Romaji-Renamer v%s\n" "$version" > "$METADATA"
 printf "metadata:\n" >> "$METADATA"
