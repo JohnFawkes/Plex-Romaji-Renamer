@@ -74,22 +74,28 @@ Designed for Plex TV agent / Plex Movie Agent, <b>Hama is unsupported</b>
 
  ## How it works:
   - Romaji-Renamer will export your Animes and TVDB/IMDB IDs from Plex with python plexapi
-  - Then it downloads the AnimeMap export once https://mapping.animemap.dev/api/v1/export.json, which carries the ids, the TVDB seasons and offsets and the whole Anilist block (score, genres, the complete tag list, studios, season, status, awards)
-  - Everything else is answered from that file offline. Only the live MyAnimeList data needs a request per anime, and the anilist API is called only for your own userlists
+  - Then it asks AnimeMap what each of those ids maps to : `mapping/lookup/tvdb/{id}` for a serie, `mapping/lookup/imdb/{id}` for a movie, which answers with every anime entry filed under it and where each one sits in the TVDB seasons
+  - `mapping/anilist/{id}` then gives each entry its metadata (titles, score, genres, the complete tag list, studios, season, status, awards) and its live MyAnimeList data
+  - Every answer is cached under `config/data` for `DATA_CACHE_TIME` days, so only what is new or expired is fetched again. The anilist API is called only for your own userlists
   - Create and update a Kometa metadata file to import everything in to your Plex when Kometa runs.
 
-> **An API key is needed.** `mapping.animemap.dev` answers `401` without one on every endpoint except `browse`. Register an account and create a key at `https://mapping.animemap.dev/api/v1/auth/keys` (it is shown once), then put it in `ANIMEMAP_API_KEY` in your `.env`. `https://mapping.animemap.dev/health` reports `api_key_required` so you can check whether your instance needs one.
+> **An API key is needed.** `mapping.animemap.dev` answers `401` without one. Register an account and create a key at `https://mapping.animemap.dev/api/v1/auth/keys` (it is shown once), then put it in `ANIMEMAP_API_KEY` in your `.env`. `https://mapping.animemap.dev/health` reports `api_key_required` so you can check whether your instance needs one.
 
 ### Moving from the Anilist and Jikan APIs to AnimeMap
 All the metadata now comes from [animemap.dev](https://animemap.dev/docs), nothing is asked of a MAL API directly and the Jikan and myanimelist.net calls are gone. Every setting works as it did before, `ANIMEMAP_API_KEY` aside.
 
-A run makes **one** bulk request. `GET /api/v1/export.json` is built for exactly this - "a consumer can download this once and answer offline what would otherwise be one request per anime" - so the id maps, the metadata, the airing list and the seasonal list are all read out of that single file. Only the live MyAnimeList block still needs `GET /api/v1/mapping/{source}/{id}` per anime, and only when a MAL source is configured.
+Nothing is downloaded in bulk. The script only ever asks about the animes that are actually in your Plex library, one id at a time, and keeps every answer under `config/data` for `DATA_CACHE_TIME` days. A first run on a fresh cache costs a handful of requests per serie; the run after it costs none at all for anything unchanged.
+
+Four endpoints are used, all of them documented :
+  - `mapping/lookup/tvdb/{id}` and `mapping/lookup/imdb/{id}` - the way in from the ids Plex gives you, and where each entry sits in the TVDB seasons
+  - `mapping/anilist/{id}` - one entry's metadata and its live MyAnimeList data
+  - `seasons/now` - the only list that is not about your library, used by the seasonal download script
+
+The airing status is the one behaviour that changed : AnimeMap carries no Anilist relation, so instead of walking the sequel chain a serie takes the status of the entries filed under its TVDB id - `Airing` if any is releasing, else `Planned` if any is announced, else `Ended`.
 
 `ANILIST_LISTS` is the one feature still served by the Anilist API : reading your own list needs `graphql.anilist.co` and AnimeMap has no equivalent, so `get-anilist-userlist` still calls it when `ANILIST_LISTS=Yes` and the `Completed` / `Watching` / `Dropped` / `Paused` / `Planning` labels are written as before. With `ANILIST_LISTS=No` (the default) nothing is sent to Anilist at all.
 
-`ANILIST_TAGS_P` works as before : the export carries the complete tag list with the ranks and the spoiler tags included, so nothing extra is fetched for them (Evangelion 44 tags, One Piece 75).
-
-The airing status is the one behaviour that changed : AnimeMap carries no Anilist relation, so instead of walking the sequel chain a serie is labelled `Planned` when any entry of its TVDB serie is still unreleased.
+`ANILIST_TAGS_P` works as before : the tags come back with their ranks and with the spoiler tags included (`include_spoilers=true`), which is what the old Anilist query asked for too. Evangelion 44 tags, One Piece 75.
 
 ### Docker container avalaible here
 https://hub.docker.com/r/arialz/romaji-renamer
@@ -215,7 +221,7 @@ DATA_CACHE_TIME=5
 
 # AnimeMap API url, only change it if you host your own instance (https://animemap.dev/docs)
 ANIMEMAP_API_URL=https://mapping.animemap.dev/api/v1
-# AnimeMap API key. mapping.animemap.dev now answers 401 without one on every endpoint but browse.
+# AnimeMap API key. mapping.animemap.dev now answers 401 without one.
 # Register an account then create a key at https://mapping.animemap.dev/api/v1/auth/keys, it is shown once.
 # Check https://mapping.animemap.dev/health : "api_key_required" tells you whether your instance needs it.
 ANIMEMAP_API_KEY=

@@ -31,8 +31,7 @@ fi
 :> "$MATCH_LOG"
 printf "%s - Starting movies script\n\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
 
-# Download the AnimeMap id mapping and catalog & the anilist userlist
-download-animemap-data
+# Download the anilist userlist
 get-anilist-userlist
 
 # export movies list from plex

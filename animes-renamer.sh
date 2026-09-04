@@ -31,8 +31,7 @@ fi
 :> "$MATCH_LOG"
 printf "%s - Starting animes script\n\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
 
-# Download the AnimeMap id mapping and catalog & the anilist userlist
-download-animemap-data
+# Download the anilist userlist
 get-anilist-userlist
 
 # export animes list from plex
@@ -101,34 +100,6 @@ do
 done < "$SCRIPT_FOLDER/config/tmp/plex_animes_export.tsv"
 printf "%s\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
 printf "%s - Done\n\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-
-# Create an ongoing list at $SCRIPT_FOLDER/config/data/ongoing.tsv
-printf "%s - Creating the AnimeMap airing list\n" "$(date +%H:%M:%S)"
-:> "$SCRIPT_FOLDER/config/data/ongoing.tsv"
-printf "%s\t - Reading the releasing animes from the AnimeMap catalog\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-jq 'select( .status == "RELEASING" ) | .anilist_id' -r "$ANIMEMAP_CATALOG"/*.json > "$SCRIPT_FOLDER/config/tmp/ongoing-tmp.tsv"
-printf "%s\t - Sorting the AnimeMap airing list \n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-sort -n "$SCRIPT_FOLDER/config/tmp/ongoing-tmp.tsv" | uniq > "$SCRIPT_FOLDER/config/tmp/ongoing.tsv"
-while read -r anilist_id
-do
-	if awk -F"\t" '{print $2}' "$SCRIPT_FOLDER/config/ID/animes.tsv" | grep -q -w "$anilist_id"
-	then
-		line=$(awk -F"\t" '{print $2}' "$SCRIPT_FOLDER/config/ID/animes.tsv" | grep -w -n "$anilist_id" | cut -d : -f 1)
-		tvdb_id=$(sed -n "${line}p" "$SCRIPT_FOLDER/config/ID/animes.tsv" | awk -F"\t" '{print $1}')
-		printf "%s\n" "$tvdb_id" >> "$SCRIPT_FOLDER/config/data/ongoing.tsv"
-	else
-		tvdb_id=$(get-tvdb-id)																	# convert the anilist id to tvdb id (to get the main anime)
-		if [[ "$tvdb_id" == 'null' ]] || [[ "${#tvdb_id}" == '0' ]]										# Ignore anime with no anilist to tvdb id conversion
-		then
-			printf "%s\t\t - Ongoing list missing TVDB ID for Anilist : %s\n" "$(date +%H:%M:%S)" "$anilist_id" | tee -a "$LOG"
-			continue
-		else
-			printf "%s\n" "$tvdb_id" >> "$SCRIPT_FOLDER/config/data/ongoing.tsv"
-		fi
-	fi
-done < "$SCRIPT_FOLDER/config/tmp/ongoing.tsv"
-printf "%s\t - Done\n" "$(date +%H:%M:%S)"
-printf "%s - Done\n\n" "$(date +%H:%M:%S)"
 
 # write PMM metadata file from ID/animes.tsv and the AnimeMap API
 printf "%s - Start writing the metadata file \n" "$(date +%H:%M:%S)" | tee -a "$LOG"
