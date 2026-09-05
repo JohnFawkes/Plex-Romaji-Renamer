@@ -91,6 +91,8 @@ Four endpoints are used, all of them documented :
   - `mapping/anilist/{id}` - one entry's metadata and its live MyAnimeList data
   - `seasons/now` - the only list that is not about your library, used by the seasonal download script
 
+AnimeMap does not always know which TVDB season an entry belongs to, and files it at season 0 with no episode offset - the same place the real specials sit. Reading only season 1 there leaves the serie with no Anilist ID at all, so when no entry claims season 1 the script falls back to the oldest serie entry, a TV before a TV_SHORT before an ONA, and if the serie has no serie entry either to the oldest entry of any format. A season 0 entry is only ever read as season 1 when it carries no episode offset, so a genuine special is never mistaken for one.
+
 The airing status is the one behaviour that changed : AnimeMap carries no Anilist relation, so the sequel chain is reconstructed from two things instead. First the entries filed under the serie's own TVDB id, then - only for a serie that still looks finished - a title search, because a season announced but not yet aired usually has no TVDB id yet and so cannot be found the first way. A serie is `Airing` if any of them is releasing, else `Planned` if any is announced, else `Ended`. Only a serie format counts for this - a movie, an OVA or a one off special is not the serie coming back, so an announced one leaves the label at `Ended`.
 
 `ANILIST_LISTS` is the one feature still served by the Anilist API : reading your own list needs `graphql.anilist.co` and AnimeMap has no equivalent, so `get-anilist-userlist` still calls it when `ANILIST_LISTS=Yes` and the `Completed` / `Watching` / `Dropped` / `Paused` / `Planning` labels are written as before. With `ANILIST_LISTS=No` (the default) nothing is sent to Anilist at all.
@@ -243,7 +245,7 @@ Run the script with bash:<br/>
 ```
 bash path/to/romaji-renamer.sh
 ```
-You can also add it to CRON and make sure to run it before Kometa (each run first downloads the AnimeMap export and catalog, which takes about a minute)
+You can also add it to CRON and make sure to run it before Kometa (a run on a cold cache asks AnimeMap about every anime in your library, so give it a few minutes the first time)
 
 ### override-ID
 Some animes won't be matched and the metadata will be missing, you can see them error in the log, in Kometa metadata files or plex directly<br/>
