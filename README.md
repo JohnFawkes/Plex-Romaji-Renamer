@@ -250,6 +250,9 @@ You can also add it to CRON and make sure to run it before Kometa (a run on a co
 ### override-ID
 Some animes won't be matched and the metadata will be missing, you can see them error in the log, in Kometa metadata files or plex directly<br/>
 Cause are missing Anilist ID for the TVDB ID / IMDB ID on AnimeMap<br/>
+
+> If **every** anime reports a missing Anilist ID, it is not the mapping - the script could not talk to AnimeMap at all. The run stops on the first failure and the line above it says why, usually a missing or refused `ANIMEMAP_API_KEY`. Check your key against `https://mapping.animemap.dev/health`, which reports whether one is required.
+
 #### Animes
 to fix animes ID you can submit an override at https://animemap.dev/docs (`/api/v1/overrides`)<br/>
 you can also use the override file, in the config folder copy `override-ID-animes.tsv.example` to `override-ID-animes.tsv` and add new entries, it look like this, be carreful to use **tab** as separator even the empty one (title, studio and ignore_seasons are optional and can be used to force corresponding string)
