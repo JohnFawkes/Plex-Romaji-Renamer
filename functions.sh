@@ -11,6 +11,15 @@ ANIMEMAP_API_RETRY=${ANIMEMAP_API_RETRY:-4}
 ANILIST_TAGS_P=${ANILIST_TAGS_P:-70}
 
 # functions
+# a fatal error is often raised from inside a command substitution, where exit only ends the subshell and the run
+# carries on reporting every anime as unmatched, so the main shell is signalled instead and stops for real
+RR_MAIN_PID=$$
+trap 'exit 1' TERM
+function fatal-error () {																# $1 message, stops the whole run wherever it is raised from
+	printf "%s - %s\n" "$(date +%H:%M:%S)" "$1" | tee -a "$LOG" >&2
+	kill -s TERM "$RR_MAIN_PID" 2>/dev/null
+	exit 1
+}
 function create-override () {
 	if [ ! -f "$SCRIPT_FOLDER/config/$OVERRIDE" ]
 	then
@@ -40,9 +49,9 @@ function animemap-api-get () {															# $1 url / $2 output file, 0 = ok, 
 		then
 			if [[ -z $ANIMEMAP_API_KEY ]]
 			then
-				printf "%s - The AnimeMap deployment requires an API key, set ANIMEMAP_API_KEY in your .env (create one at %s/auth/keys)\n" "$(date +%H:%M:%S)" "$ANIMEMAP_API_URL" | tee -a "$LOG"
+				printf "%s - The AnimeMap deployment requires an API key, set ANIMEMAP_API_KEY in your .env (create one at %s/auth/keys)\n" "$(date +%H:%M:%S)" "$ANIMEMAP_API_URL" | tee -a "$LOG" >&2
 			else
-				printf "%s - The AnimeMap API refused the key in ANIMEMAP_API_KEY (%s)\n" "$(date +%H:%M:%S)" "$http_code" | tee -a "$LOG"
+				printf "%s - The AnimeMap API refused the key in ANIMEMAP_API_KEY (%s)\n" "$(date +%H:%M:%S)" "$http_code" | tee -a "$LOG" >&2
 			fi
 			rm -f "$output"
 			return 1
@@ -50,7 +59,7 @@ function animemap-api-get () {															# $1 url / $2 output file, 0 = ok, 
 		((try++))
 		if [ $try -lt "$ANIMEMAP_API_RETRY" ]
 		then
-			printf "%s\t\t - AnimeMap API answered %s for %s, waiting 30s\n" "$(date +%H:%M:%S)" "$http_code" "$url" | tee -a "$LOG"
+			printf "%s\t\t - AnimeMap API answered %s for %s, waiting 30s\n" "$(date +%H:%M:%S)" "$http_code" "$url" | tee -a "$LOG" >&2
 			sleep 30
 		fi
 	done
@@ -68,11 +77,10 @@ function get-animemap-tvdb-lookup () {													# every entry carrying $tvdb_
 	printf "%s\t\t - Downloading the entries of tvdb : %s\n" "$(date +%H:%M:%S)" "$tvdb_id" | tee -a "$LOG" >&2
 	if ! animemap-api-get "$ANIMEMAP_API_URL/mapping/lookup/tvdb/$tvdb_id" "$api_file"
 	then
-		printf "%s - Error can't read the entries of tvdb : %s stopping script\n" "$(date +%H:%M:%S)" "$tvdb_id" | tee -a "$LOG" >&2
-		exit 1
+		fatal-error "Error can't read the entries of tvdb : $tvdb_id stopping script"
 	fi
 	# a tvdb season of "a" (absolute numbering) or none at all is kept as "-1", the value the season logic uses for "not split per tvdb season"
-	jq -c --arg tvdb_id "$tvdb_id" '[ .entries[]
+	if ! jq -c --arg tvdb_id "$tvdb_id" '[ .entries[]
 		| select( .anilist_id != null )
 		| { tvdb_id: $tvdb_id,
 			tvdb_season: ( if ( .tvdb.season | type ) == "number" then ( .tvdb.season | tostring ) else "-1" end ),
@@ -82,6 +90,10 @@ function get-animemap-tvdb-lookup () {													# every entry carrying $tvdb_
 			anidb_id: ( ( .anidb.id // "" ) | tostring ),
 			mal_id: ( ( .mal.id // "" ) | tostring ),
 			anilist_id: ( .anilist_id | tostring ) } ]' "$api_file" > "$tvdb_map_file"
+	then
+		rm -f "$tvdb_map_file" "$api_file"
+		fatal-error "Error the AnimeMap answer for tvdb : $tvdb_id is not the shape this script reads, stopping script"
+	fi
 	rm -f "$api_file"
 	printf "%s\t\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG" >&2
 }
@@ -95,17 +107,20 @@ function get-animemap-imdb-lookup () {													# every entry carrying $imdb_
 	printf "%s\t\t - Downloading the entries of imdb : %s\n" "$(date +%H:%M:%S)" "$imdb_id" | tee -a "$LOG" >&2
 	if ! animemap-api-get "$ANIMEMAP_API_URL/mapping/lookup/imdb/$imdb_id" "$api_file"
 	then
-		printf "%s - Error can't read the entries of imdb : %s stopping script\n" "$(date +%H:%M:%S)" "$imdb_id" | tee -a "$LOG" >&2
-		exit 1
+		fatal-error "Error can't read the entries of imdb : $imdb_id stopping script"
 	fi
 	# only what a plex movies library can hold, so a serie imdb id never matches a movie
-	jq -c --arg imdb_id "$imdb_id" '[ .entries[]
+	if ! jq -c --arg imdb_id "$imdb_id" '[ .entries[]
 		| select( .anilist_id != null )
 		| select( .format == "MOVIE" or .tmdb.media_type == "movie" )
 		| { imdb_id: $imdb_id,
 			anidb_id: ( ( .anidb.id // "" ) | tostring ),
 			mal_id: ( ( .mal.id // "" ) | tostring ),
 			anilist_id: ( .anilist_id | tostring ) } ]' "$api_file" > "$imdb_map_file"
+	then
+		rm -f "$imdb_map_file" "$api_file"
+		fatal-error "Error the AnimeMap answer for imdb : $imdb_id is not the shape this script reads, stopping script"
+	fi
 	rm -f "$api_file"
 	printf "%s\t\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG" >&2
 }
@@ -233,8 +248,7 @@ function get-animemap-infos () {														# cache the catalog entry of $anil
 	api_status=$?
 	if [[ $api_status == 1 ]]
 	then
-		printf "%s - Error can't download animemap data stopping script\n" "$(date +%H:%M:%S)" | tee -a "$LOG" >&2
-		exit 1
+		fatal-error "Error can't download animemap data for anilist : $anilist_id stopping script"
 	fi
 	if [[ $api_status == 2 ]]
 	then																				# nothing carries that id, keep an empty record so the run carries on
