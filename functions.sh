@@ -68,8 +68,8 @@ function animemap-api-get () {															# $1 url / $2 output file, 0 = ok, 
 }
 function get-animemap-tvdb-lookup () {													# every entry carrying $tvdb_id, cached, sets $tvdb_map_file
 	tvdb_map_file="$SCRIPT_FOLDER/config/data/animemap-tvdb-$tvdb_id.json"
-	# a cache written before the format and offset keys existed cannot answer the season 0 fallback, so it is downloaded again
-	if [ -f "$tvdb_map_file" ] && jq -e 'length == 0 or ( .[0] | has( "tvdb_epoffset_null" ) )' "$tvdb_map_file" > /dev/null 2>&1
+	# a cache written before the newest key existed cannot answer the season fallbacks below, so it is downloaded again
+	if [ -f "$tvdb_map_file" ] && jq -e 'length == 0 or ( .[0] | has( "tvdb_seasons_covered" ) )' "$tvdb_map_file" > /dev/null 2>&1
 	then
 		return 0
 	fi
@@ -79,11 +79,16 @@ function get-animemap-tvdb-lookup () {													# every entry carrying $tvdb_
 	then
 		fatal-error "Error can't read the entries of tvdb : $tvdb_id stopping script"
 	fi
-	# a tvdb season of "a" (absolute numbering) or none at all is kept as "-1", the value the season logic uses for "not split per tvdb season"
+	# a tvdb season of "a" (absolute numbering) or none at all is kept as "-1", the value the season logic uses for "not split per tvdb season".
+	# tvdb_seasons_covered is the rest of the run : a long serie tvdb split over several seasons carries them in its season mapping list.
+	# season 0 is dropped from it unless the entry itself sits there, because nearly every entry carries a season 0 row for its specials
 	if ! jq -c --arg tvdb_id "$tvdb_id" '[ .entries[]
 		| select( .anilist_id != null )
+		| ( [ .tvdb.season_mapping_list[]?.tvdb_season | select( type == "number" ) ] ) as $mapped
 		| { tvdb_id: $tvdb_id,
 			tvdb_season: ( if ( .tvdb.season | type ) == "number" then ( .tvdb.season | tostring ) else "-1" end ),
+			tvdb_seasons_covered: ( ( if ( .tvdb.season == 0 ) then $mapped else ( $mapped | map( select( . != 0 ) ) ) end )
+				| unique | map( tostring ) ),
 			tvdb_epoffset: ( ( .tvdb.episode_offset // 0 ) | tostring ),
 			tvdb_epoffset_null: ( .tvdb.episode_offset == null ),
 			format: ( ( .format // "" ) | tostring ),
@@ -872,10 +877,16 @@ function check-rating-2-valid () {
 	fi
 }
 function tvdb-season-entries () {														# the entries filed under tvdb season $1, as a json array
+	# one anilist entry can run across several tvdb seasons, a long serie tvdb cut into four of them, and only the first is the entry's own
+	# tvdb season - the rest are in its season mapping list, so they answer for a season whose own entries hold no first episode,
+	# which is the season the serie really runs through with only a movie or a special filed on top of it.
 	# a first season AnimeMap could not place lands at tvdb season 0 carrying no episode offset, which is also where the real specials sit,
 	# so only a serie entry with no offset at all is read as the season 1 the mapping is missing
 	jq -c --arg season_number "$1" '[ .[] | select( .tvdb_season == $season_number ) ] as $season
-		| if ( $season | length ) > 0 then $season
+		| [ .[] | select( ( .tvdb_seasons_covered // [] ) | index( $season_number ) ) ] as $spanning
+		| if ( [ $season[] | select( .tvdb_epoffset == "0" ) ] | length ) > 0 then $season
+			elif ( $spanning | length ) > 0 then $spanning
+			elif ( $season | length ) > 0 then $season
 			elif $season_number == "1"
 			then ( [ .[] | select( .tvdb_season == "0" and .tvdb_epoffset_null and ( .format == "TV" or .format == "TV_SHORT" or .format == "ONA" ) ) ]
 				| to_entries
