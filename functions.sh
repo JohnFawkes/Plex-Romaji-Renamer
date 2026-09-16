@@ -225,7 +225,13 @@ function animemap-empty-record () {														# a full record with every fiel
 		tvdb_id: null,
 		tvdb_season: null,
 		tvdb_epoffset: null,
-		crunchyroll_awards: [] }'
+		crunchyroll_awards: [],
+		incomplete: false }'
+}
+function drop-incomplete-records () {									# a record AnimeMap answered without its anilist half is never read on a later run
+	# the glob is the per anime records only, the digits keeping the tvdb, imdb, mal and search caches out of it.
+	# anything that is not plainly complete goes, which also clears the records written before the flag existed
+	grep -L -F '"incomplete":false' "$SCRIPT_FOLDER"/config/data/animemap-[0-9]*.json 2>/dev/null | xargs -r rm -f
 }
 function get-animemap-infos () {														# cache the catalog entry of $anilist_id at config/data/animemap-$anilist_id.json
 	local data_file="$SCRIPT_FOLDER/config/data/animemap-$anilist_id.json"
@@ -262,8 +268,11 @@ function get-animemap-infos () {														# cache the catalog entry of $anil
 		animemap-empty-record "$anilist_id" > "$data_file"
 		return 0
 	fi
-	# a studio name comes back as an object here and as a string elsewhere, so both are reduced to the name
-	jq -c '.mapping | { anilist_id: .anilist.anilist_id,
+	# a studio name comes back as an object here and as a string elsewhere, so both are reduced to the name.
+	# when AnimeMap warns that its own anilist lookup failed the record comes back without the score, the status and the genres,
+	# so it is flagged and the next run downloads it again instead of reading the gap as a serie with no rating for DATA_CACHE_TIME days
+	jq -c '( ( [ .warnings[]? | select( test( "anilist"; "i" ) ) ] | length ) > 0 ) as $incomplete
+		| .mapping | { anilist_id: .anilist.anilist_id,
 		title_romaji: .anilist.title_romaji,
 		title_english: .anilist.title_english,
 		title_native: .anilist.title_native,
@@ -281,8 +290,13 @@ function get-animemap-infos () {														# cache the catalog entry of $anil
 		tvdb_id: .tvdb.id,
 		tvdb_season: ( if ( .tvdb.season | type ) == "number" then ( .tvdb.season | tostring ) else "-1" end ),
 		tvdb_epoffset: ( ( .tvdb.episode_offset // 0 ) | tostring ),
-		crunchyroll_awards: ( .crunchyroll_awards // [] ) }' "$api_file" > "$data_file"
+		crunchyroll_awards: ( .crunchyroll_awards // [] ),
+		incomplete: $incomplete }' "$api_file" > "$data_file"
 	rm -f "$api_file"
+	if jq -e '.incomplete' "$data_file" > /dev/null 2>&1
+	then
+		printf "%s\t\t - AnimeMap could not reach Anilist for : %s, no score, status or genre in this answer\n" "$(date +%H:%M:%S)" "$anilist_id" | tee -a "$LOG" >&2
+	fi
 	printf "%s\t\t - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG" >&2
 }
 function get-mal-infos () {																# the MyAnimeList data AnimeMap serves alongside a mapping, a raw jikan data object

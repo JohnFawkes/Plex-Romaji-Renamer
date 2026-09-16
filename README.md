@@ -77,6 +77,7 @@ Designed for Plex TV agent / Plex Movie Agent, <b>Hama is unsupported</b>
   - Then it asks AnimeMap what each of those ids maps to : `mapping/lookup/tvdb/{id}` for a serie, `mapping/lookup/imdb/{id}` for a movie, which answers with every anime entry filed under it and where each one sits in the TVDB seasons
   - `mapping/anilist/{id}` then gives each entry its metadata (titles, score, genres, the complete tag list, studios, season, status, awards) and its live MyAnimeList data
   - Every answer is cached under `config/data` for `DATA_CACHE_TIME` days, so only what is new or expired is fetched again. The anilist API is called only for your own userlists
+  - When AnimeMap warns that its own Anilist lookup failed, the answer comes back with no score, status or genres. That record is used for the run but flagged, and dropped at the start of the next one, so an outage on their side is not baked into your cache for `DATA_CACHE_TIME` days
   - Create and update a Kometa metadata file to import everything in to your Plex when Kometa runs.
 
 > **An API key is needed.** `mapping.animemap.dev` answers `401` without one. Register an account and create a key at `https://mapping.animemap.dev/api/v1/auth/keys` (it is shown once), then put it in `ANIMEMAP_API_KEY` in your `.env`. `https://mapping.animemap.dev/health` reports `api_key_required` so you can check whether your instance needs one.

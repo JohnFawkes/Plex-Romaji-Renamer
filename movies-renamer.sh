@@ -14,6 +14,7 @@ then
 	mkdir "$SCRIPT_FOLDER/config/data"
 else
 	find "$SCRIPT_FOLDER/config/data/" -type f -mtime +"$DATA_CACHE_TIME" -exec rm {} \;		#delete json data if older than 2 days
+	drop-incomplete-records
 fi
 if [ ! -d "$SCRIPT_FOLDER/config/tmp" ]														#check if exist and create folder for json data
 then
