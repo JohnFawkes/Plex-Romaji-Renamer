@@ -74,7 +74,7 @@ Designed for Plex TV agent / Plex Movie Agent, <b>Hama is unsupported</b>
 
  ## How it works:
   - Romaji-Renamer will export your Animes and TVDB/IMDB IDs from Plex with python plexapi
-  - Then it will then retrieve their MAL/Anilist IDs from my mapping list https://github.com/Arial-Z/Animes-ID
+  - Then it will then retrieve their MAL/Anilist IDs from AnimeMap (https://mapping.animemap.dev, set `ANIMEMAP_API_KEY` in your .env), or from the mapping list https://github.com/Arial-Z/Animes-ID when no key is set
   - Use the Anilist API and Jikan API to get metadata from Anilist and MAL
   - Create and update a Kometa metadata file to import everything in to your Plex when Kometa runs.
 
@@ -107,6 +107,13 @@ Git clone the **main** branch or get lastest release : https://github.com/Arial-
 plex_url=http://127.0.0.1:32400
 #Plex token (Needed)
 plex_token=zadazdzadazdazdazdazdazd
+
+# AnimeMap url, only change it if you host your own instance
+ANIMEMAP_URL=https://mapping.animemap.dev
+# AnimeMap API key: the ID mapping (TVDB/IMDb to Anilist/MAL, TVDB season and episode offset) is downloaded from AnimeMap.
+# API keys are created by the instance's admin (Admin > API keys on https://mapping.animemap.dev), the key is shown once.
+# Leave empty to use Arial-Z's Animes-ID lists instead.
+ANIMEMAP_API_KEY=
 
 
 # Run the animes script (Yes/No)
