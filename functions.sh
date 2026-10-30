@@ -2,6 +2,9 @@
 
 #General variables
 LOG=$LOG_FOLDER/RR_$(date +%Y.%m.%d).log
+# AnimeMap ID mapping (https://mapping.animemap.dev), defaults for a .env written before these settings existed
+ANIMEMAP_URL=${ANIMEMAP_URL:-https://mapping.animemap.dev}
+ANIMEMAP_API_KEY=${ANIMEMAP_API_KEY:-}
 MATCH_LOG=$LOG_FOLDER/${media_type}-missing-id.log
 
 # functions
@@ -12,24 +15,46 @@ function create-override () {
 	fi
 }
 function download-anime-id-mapping () {
+	# The ID mapping comes from AnimeMap (https://mapping.animemap.dev) when ANIMEMAP_API_KEY is set,
+	# in the same row format as Arial-Z's Animes-ID lists, else from Arial-Z's lists directly.
+	local list mapping_file mapping_url http_code
+	if [[ $media_type == "animes" ]]
+	then
+		list="animes"
+	else
+		list="movies"
+	fi
+	mapping_file="$SCRIPT_FOLDER/config/tmp/list-$list-id.json"
+	if [[ -n $ANIMEMAP_API_KEY ]]
+	then
+		mapping_url="${ANIMEMAP_URL%/}/api/v1/export/$list"
+		printf "%s - Downloading animes mapping from AnimeMap (%s)\n" "$(date +%H:%M:%S)" "${ANIMEMAP_URL%/}" | tee -a "$LOG"
+	else
+		mapping_url="https://raw.githubusercontent.com/Arial-Z/Animes-ID/main/list-$list-id.json"
+		printf "%s - ANIMEMAP_API_KEY is not set in your .env, downloading Arial-Z's animes mapping instead\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
+	fi
 	wait_time=0
 	while [ $wait_time -lt 5 ];
 	do
-		printf "%s - Downloading animes mapping\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
-		if [[ $media_type == "animes" ]]
+		if [[ -n $ANIMEMAP_API_KEY ]]
 		then
-			curl -s "https://raw.githubusercontent.com/Arial-Z/Animes-ID/main/list-animes-id.json" > "$SCRIPT_FOLDER/config/tmp/list-animes-id.json"
-			size=$(du -b "$SCRIPT_FOLDER/config/tmp/list-animes-id.json" | awk '{ print $1 }')
+			# the key travels in a header, never in the url, so it stays out of the logs
+			http_code=$(curl -s -o "$mapping_file" -w "%{http_code}" -H "X-API-Key: $ANIMEMAP_API_KEY" "$mapping_url")
+			if [[ $http_code == "401" ]] || [[ $http_code == "403" ]]
+			then
+				printf "%s - AnimeMap refused ANIMEMAP_API_KEY (HTTP %s), check the key in your .env\n" "$(date +%H:%M:%S)" "$http_code" | tee -a "$LOG"
+				exit 1
+			fi
 		else
-			curl -s "https://raw.githubusercontent.com/Arial-Z/Animes-ID/main/list-movies-id.json" > "$SCRIPT_FOLDER/config/tmp/list-movies-id.json"
-			size=$(du -b "$SCRIPT_FOLDER/config/tmp/list-movies-id.json" | awk '{ print $1 }')
+			curl -s "$mapping_url" > "$mapping_file"
 		fi
+		size=$(du -b "$mapping_file" | awk '{ print $1 }')
 		((wait_time++))
 		if [[ $wait_time == 4 ]]
 		then
 			printf "%s - Error can't download animes mapping file stopping script\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
 			exit 1
-		elif [[ $size -gt 1000 ]]
+		elif [[ $size -gt 1000 ]] && jq -e 'type == "array"' "$mapping_file" > /dev/null 2>&1
 		then
 			printf "%s - Done\n" "$(date +%H:%M:%S)" | tee -a "$LOG"
 			break
